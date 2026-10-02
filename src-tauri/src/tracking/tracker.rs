@@ -102,6 +102,11 @@ fn weaker_confidence(a: Confidence, b: Confidence) -> Confidence {
 /// (см. `git_adapter`); вся логика приоритета — в `git_context::resolve`,
 /// покрыта unit-тестами отдельно.
 fn resolve_git_context(conn: &Connection) -> GitContextResult {
+    // Читаем пин на каждый poll (не кэшируем) — FR-06.10 требует, чтобы
+    // переключение задачи в overlay подействовало немедленно, на следующем
+    // же poll, а не после перезапуска потока.
+    let pinned = crate::tracking::pinned_task::get_pinned_issue_key(conn);
+
     let projects = match projects_repo::list(conn) {
         Ok(list) => list,
         Err(err) => {
@@ -112,7 +117,7 @@ fn resolve_git_context(conn: &Connection) -> GitContextResult {
 
     let enabled: Vec<&Project> = projects.iter().filter(|p| p.enabled).collect();
     if enabled.is_empty() {
-        return git_context::resolve(None, None, None);
+        return git_context::resolve(pinned.as_deref(), None, None);
     }
 
     let candidates: Vec<(&Project, Option<SystemTime>)> =
@@ -120,7 +125,7 @@ fn resolve_git_context(conn: &Connection) -> GitContextResult {
     let active = git_context::pick_most_recently_active(&candidates);
     let status = active.map(|p| git_adapter::get_current_branch(Path::new(&p.repo_path)));
 
-    git_context::resolve(None, active, status.as_ref())
+    git_context::resolve(pinned.as_deref(), active, status.as_ref())
 }
 
 /// Запускает фоновый поток опроса и возвращает хендл управления им.

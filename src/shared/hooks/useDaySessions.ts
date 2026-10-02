@@ -1,7 +1,7 @@
 import { listen } from '@tauri-apps/api/event'
 import { useCallback, useEffect, useState } from 'react'
-import type { DaySessionsView } from '@shared/types/work-session'
 import { api, errorMessage } from '../api'
+import type { DaySessionsView } from '../types/work-session'
 
 interface UseDaySessionsResult {
   view: DaySessionsView | null
@@ -15,7 +15,8 @@ interface UseDaySessionsResult {
  * и перезагружает их по событию `sessions:changed` — трекер и любые
  * команды редактирования шлют его при изменениях (см.
  * `src-tauri/src/tracking/tracker.rs`, `commands/sessions.rs`), поэтому
- * здесь нет поллинга таймером.
+ * здесь нет поллинга таймером. Используется и main-window, и overlay —
+ * один и тот же сервис на оба окна (ТЗ, раздел 6).
  */
 export function useDaySessions(localDate: string): UseDaySessionsResult {
   const [view, setView] = useState<DaySessionsView | null>(null)

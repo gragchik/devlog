@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { Project } from '@shared/types/project'
 import type { TrackerThresholds, WhitelistEntry } from '@shared/types/settings'
-import { api, errorMessage } from '../api'
+import { api, errorMessage } from '@shared/api'
 
 function ProjectsSection(): JSX.Element {
   const [projects, setProjects] = useState<Project[]>([])
@@ -222,6 +222,52 @@ function AutostartSection(): JSX.Element {
   )
 }
 
+function ShortcutSection(): JSX.Element {
+  const [current, setCurrent] = useState<string | null>(null)
+  const [draft, setDraft] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [saved, setSaved] = useState(false)
+
+  useEffect(() => {
+    api.getOverlayShortcut().then((s) => {
+      setCurrent(s)
+      setDraft(s)
+    }).catch((err: unknown) => setError(errorMessage(err)))
+  }, [])
+
+  async function save(): Promise<void> {
+    if (!draft.trim()) return
+    try {
+      await api.setOverlayShortcut(draft.trim())
+      setCurrent(draft.trim())
+      setError(null)
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+    } catch (err) {
+      // FR-06.2: конфликт с другим приложением — показываем ошибку, не сохраняем.
+      setError(errorMessage(err))
+    }
+  }
+
+  return (
+    <section className="card">
+      <h2>Горячая клавиша overlay</h2>
+      <p className="muted">
+        FR-06.2: формат — например <code>Ctrl+Alt+W</code>, <code>Alt+Space</code>. Применяется сразу, без
+        перезапуска. Если комбинация занята другим приложением — сохранение не пройдёт, текущая останется активной.
+      </p>
+      {error && <p className="error">{error}</p>}
+      {saved && <p className="muted">Сохранено и применено.</p>}
+      <div className="settings-add-row">
+        <input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="Ctrl+Alt+W" />
+        <button type="button" onClick={save} disabled={draft.trim() === current}>
+          Сохранить
+        </button>
+      </div>
+    </section>
+  )
+}
+
 export function SettingsPage(): JSX.Element {
   return (
     <div className="page">
@@ -230,6 +276,7 @@ export function SettingsPage(): JSX.Element {
       <WhitelistSection />
       <ThresholdsSection />
       <AutostartSection />
+      <ShortcutSection />
     </div>
   )
 }

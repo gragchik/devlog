@@ -1,12 +1,14 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { CreateProjectInput, Project, UpdateProjectInput } from '@shared/types/project'
-import type { TrackerThresholds, WhitelistEntry } from '@shared/types/settings'
-import type { CreateWorkSessionInput, DaySessionsView, UpdateWorkSessionPatch, WorkSession } from '@shared/types/work-session'
+import type { CreateProjectInput, Project, UpdateProjectInput } from './types/project'
+import type { TrackerThresholds, WhitelistEntry } from './types/settings'
+import type { CreateWorkSessionInput, DaySessionsView, UpdateWorkSessionPatch, WorkSession } from './types/work-session'
 
 /**
  * Тонкая типизированная обёртка над `invoke()` — один файл со всеми
- * командами, чтобы не раскидывать строковые имена каналов по компонентам
- * (опечатка в названии команды иначе всплывает только в рантайме).
+ * командами, используется и main-window, и overlay (один и тот же сервис
+ * на обе стороны, ТЗ раздел 6/FR-06.9). Не раскидываем строковые имена
+ * каналов по компонентам — опечатка в названии команды иначе всплывает
+ * только в рантайме.
  */
 export const api = {
   getSessionsForDay: (localDate: string) => invoke<DaySessionsView>('get_sessions_for_day', { localDate }),
@@ -31,7 +33,15 @@ export const api = {
   setAutostartEnabled: (enabled: boolean) => invoke<void>('set_autostart_enabled', { enabled }),
 
   getTrackingPaused: () => invoke<boolean>('get_tracking_paused'),
-  setTrackingPaused: (paused: boolean) => invoke<boolean>('set_tracking_paused', { paused })
+  setTrackingPaused: (paused: boolean) => invoke<boolean>('set_tracking_paused', { paused }),
+
+  getPinnedIssue: () => invoke<string | null>('get_pinned_issue'),
+  setPinnedIssue: (issueKey: string | null) => invoke<void>('set_pinned_issue', { issueKey }),
+
+  getOverlayShortcut: () => invoke<string>('get_overlay_shortcut'),
+  setOverlayShortcut: (accelerator: string) => invoke<void>('set_overlay_shortcut', { accelerator }),
+
+  showMainWindow: () => invoke<void>('show_main_window_command')
 }
 
 /** Приводит ошибку из `invoke()` (обычно строка от Tauri) к читаемому тексту. */

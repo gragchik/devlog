@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import { formatDuration } from '@shared/utils/format-duration'
 import { SessionRow } from '../components/SessionRow'
-import { api, errorMessage } from '../api'
-import { useDaySessions } from '../hooks/useDaySessions'
+import { api, errorMessage } from '@shared/api'
+import { useDaySessions } from '@shared/hooks/useDaySessions'
 
 type DateChoice = 'today' | 'yesterday' | string
 

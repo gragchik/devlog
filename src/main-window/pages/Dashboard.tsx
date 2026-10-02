@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { formatDuration } from '@shared/utils/format-duration'
-import { api, errorMessage } from '../api'
-import { useDaySessions } from '../hooks/useDaySessions'
+import { api, errorMessage } from '@shared/api'
+import { useDaySessions } from '@shared/hooks/useDaySessions'
 
 export function Dashboard(): JSX.Element {
   const { view, loading, error } = useDaySessions('today')

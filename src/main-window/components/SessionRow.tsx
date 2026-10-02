@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import type { WorkSession } from '@shared/types/work-session'
 import { formatDurationShort, formatTimeOfDay } from '@shared/utils/format-duration'
-import { api, errorMessage } from '../api'
+import { api, errorMessage } from '@shared/api'
 
 const STATUS_LABEL: Record<WorkSession['reviewStatus'], string> = {
   detected: 'распознано',

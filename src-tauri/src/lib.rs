@@ -2,18 +2,16 @@ mod commands;
 mod db;
 mod domain;
 mod platform;
+mod shortcuts;
 mod tracking;
 mod tray;
 mod windows;
 
 use tauri::{Manager, WindowEvent};
-use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+use tauri_plugin_global_shortcut::ShortcutState;
 use tray::create_tray;
 use windows::main_window::{show_main_window, MAIN_LABEL};
 use windows::overlay_window::{ensure_overlay_window, toggle_overlay, OVERLAY_LABEL};
-
-/// Можно сделать настраиваемым в Settings — см. Итерацию 5/6.
-pub const DEFAULT_OVERLAY_SHORTCUT: &str = "Ctrl+Alt+W";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -54,6 +52,11 @@ pub fn run() {
             commands::settings::set_autostart_enabled,
             commands::tracking::get_tracking_paused,
             commands::tracking::set_tracking_paused,
+            commands::tracking::get_pinned_issue,
+            commands::tracking::set_pinned_issue,
+            commands::shortcuts::get_overlay_shortcut,
+            commands::shortcuts::set_overlay_shortcut,
+            commands::windows::show_main_window_command,
         ])
         .setup(|app| {
             let handle = app.handle();
@@ -76,14 +79,16 @@ pub fn run() {
             ensure_overlay_window(handle)?;
             create_tray(handle)?;
 
-            let shortcut: tauri_plugin_global_shortcut::Shortcut =
-                DEFAULT_OVERLAY_SHORTCUT.parse().expect("DEFAULT_OVERLAY_SHORTCUT must parse");
-            if let Err(err) = handle.global_shortcut().register(shortcut) {
+            // FR-06.2: хоткей — из settings (пользователь мог переназначить
+            // в прошлой сессии), иначе дефолт.
+            let accelerator = {
+                let db = app.state::<db::app_database::AppDatabase>();
+                let conn = db.0.lock().expect("AppDatabase mutex poisoned");
+                shortcuts::configured_shortcut(&conn)
+            };
+            if let Err(err) = shortcuts::register_overlay_shortcut(handle, &accelerator) {
                 // FR-06.2: конфликт с другим приложением — предупреждаем, не падаем.
-                eprintln!(
-                    "[shortcuts] Не удалось зарегистрировать {DEFAULT_OVERLAY_SHORTCUT}: {err}. \
-                     Overlay можно открыть через трей."
-                );
+                eprintln!("[shortcuts] Не удалось зарегистрировать {accelerator}: {err}. Overlay можно открыть через трей.");
             }
 
             Ok(())
