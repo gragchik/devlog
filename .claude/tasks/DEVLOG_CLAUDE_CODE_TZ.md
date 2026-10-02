@@ -5,6 +5,17 @@
 **Основной пользователь:** один разработчик, локальная установка, без командного режима и облачного backend.
 **Статус:** план разработки, не описание существующего приложения.
 
+> **Изменение стека (2026-10-02):** исходная версия документа указывала
+> Electron. По решению пользователя стек заменён на **Tauri**
+> (Rust backend + системный WebView + React/TS/Vite frontend) — см. раздел
+> 2. Итерации 0–1 **уже были реализованы на Electron** (коммиты `a8b22e2`,
+> `7283498` в git-истории: окна, трей, overlay, безопасный IPC, SQLite-слой
+> на `better-sqlite3` с миграциями и репозиториями, тесты) и будут
+> переписаны с нуля на Tauri начиная с Итерации 0 — старый Electron-код
+> удаляется из рабочего дерева, но остаётся в git-истории как референс.
+> Весь текст ниже уже приведён к Tauri; разделы, специфичные для
+> Electron-API, заменены на Tauri-эквиваленты.
+
 ## 1. Цель и результат
 
 Разработать локальное desktop-приложение, которое без ручного запуска таймеров собирает минимальные сигналы рабочей активности, сопоставляет их с Git/Jira-задачами, формирует историю рабочих сессий и черновики worklog за день. На следующее утро пользователь открывает подготовленный отчёт, при необходимости исправляет время и описание и вручную подтверждает отправку в Jira.
@@ -15,15 +26,15 @@
 
 ## 2. Стек и принципы
 
-- Electron (main/preload/renderer), React, TypeScript, Vite.
-- SQLite для локальной БД; библиотеку доступа выбрать с проверкой совместимости с Electron и работой native-модулей после сборки. Миграции БД обязательны.
-- Vitest для unit/integration, Playwright Electron или эквивалент для e2e UI.
-- Сборка Windows installer через Electron Forge или electron-builder; выбор зафиксировать в ADR до реализации.
-- Один основной процесс, одно главное окно (создаётся при необходимости), отдельное overlay-окно, системный трей.
-- Не запускать HTTP-сервер, если он не нужен. Взаимодействие React с privileged-кодом — только через типизированный preload/IPC.
+- **Tauri 2.x** (Rust backend/core + системный WebView2 на Windows), React, TypeScript, Vite — фронтенд собирается Vite как обычное SPA, Rust-часть (`src-tauri/`) — через Cargo/Tauri CLI.
+- SQLite для локальной БД — `rusqlite` (с фичей `bundled`, чтобы не зависеть от системной libsqlite3) в Rust-коде; доступ из frontend только через Tauri-команды, не напрямую. Миграции БД обязательны.
+- Vitest для unit/integration фронтенда; `cargo test` для unit/integration Rust-кода (БД, трекер, парсинг); Tauri's WebDriver (`tauri-driver` + WebdriverIO/аналог) или ручной сценарий для e2e UI — выбор зафиксировать в ADR.
+- Сборка Windows installer — встроенный Tauri bundler (`tauri build`, NSIS/MSI через `tauri.conf.json#bundle`); отдельный инструмент не нужен (в отличие от Electron Forge/electron-builder).
+- Один Rust-процесс (core + все webview-окна в одном процессе у Tauri, в отличие от Electron с его per-renderer процессами), одно главное окно (создаётся при необходимости), отдельное overlay-окно, системный трей (`tauri::tray`).
+- Не запускать HTTP-сервер, если он не нужен. Взаимодействие React с privileged-кодом — только через типизированные Tauri-команды (`#[tauri::command]` + `invoke()`), без прямого доступа фронтенда к файловой системе/ОС.
 - Не вводить AI, серверную БД, облачную синхронизацию и IDE plugin в базовый MVP.
-- Логика трекинга не должна зависеть от жизненного цикла окон.
-- Код разделять по модулям, а не складывать бизнес-логику в React-компоненты.
+- Логика трекинга живёт в Rust-ядре и не должна зависеть от жизненного цикла окон/webview.
+- Код разделять по модулям (Rust crate-модули на backend, обычная модульная структура на frontend), а не складывать бизнес-логику в React-компоненты или в один `main.rs`.
 
 ## 3. Функциональные требования
 
@@ -37,7 +48,7 @@
 ### FR-02. Пассивный сбор активности
 
 1. Периодически (цель: каждые 5 секунд, конфигурируемо) получать имя активного процесса, системное idle time и текущее время.
-2. `powerMonitor` использовать для idle/lock/suspend/resume. Для получения *чужого* активного окна нужен отдельный Windows Win32 adapter/helper: `GetForegroundWindow`, `GetWindowThreadProcessId` и минимально необходимая информация о процессе. Не полагаться на несуществующий Electron API foreground process.
+2. Для idle/lock/suspend/resume на Windows использовать нативные Win32-вызовы из Rust (крейт `windows` — официальные `windows-rs` биндинги Microsoft): `GetLastInputInfo` (idle time), `WTSRegisterSessionNotification`/`WM_WTSSESSION_CHANGE` или подписку на `SystemEvents`/power-broadcast сообщения для lock/suspend/resume. Для получения foreground-окна другого приложения — `GetForegroundWindow`, `GetWindowThreadProcessId`, `QueryFullProcessImageNameW` (тот же крейт `windows`), без FFI-библиотек вроде koffi — в Rust это обычные typed-биндинги, не требующие отдельного ADR по FFI-стратегии.
 3. Список приложений для учёта: WebStorm, VS Code, терминал и вручную выбранные рабочие программы; остальные приложения по умолчанию исключены или попадают в «Нераспределено» без чувствительных данных.
 4. Детали окон/URLs, текст файлов, команды терминала, клавиши, clipboard, скриншоты, пароли, токены и содержимое документов НЕ записывать.
 5. При idle дольше 180 секунд, блокировке, сне, ручной паузе закрывать рабочую сессию по последнему подтверждённому активному моменту; период бездействия не считать работой. На восстановлении начинать новый интервал.
@@ -77,9 +88,9 @@
 
 **Сценарий:** работая в WebStorm, пользователь нажимает `Ctrl+Alt+W` (настраивается) и получает маленькое окно поверх IDE, без перехода в главное приложение.
 
-1. Реализовать **отдельный** `BrowserWindow` (~480–560 px шириной), frameless, с закруглённым UI, `alwaysOnTop`, `skipTaskbar`; прозрачность окна использовать только если она нужна и стабильно работает в Windows.
-2. Вызывать через Electron `globalShortcut`, tray menu и кнопку главного окна. Учитывать отказ регистрации shortcut (конфликт с другим приложением), показывать предупреждение и разрешать назначить другую комбинацию.
-3. Позиционировать у правого верхнего края активного монитора, в границах `screen.getDisplayNearestPoint(...).workArea`; учитывать 125–200% DPI, несколько мониторов и перемещение taskbar.
+1. Реализовать **отдельное** окно (`tauri::WebviewWindowBuilder`, ~480–560 px шириной), frameless (`.decorations(false)`), с закруглённым UI, `.always_on_top(true)`, `.skip_taskbar(true)`; прозрачность окна (`.transparent(true)`) использовать только если она нужна и стабильно работает в Windows.
+2. Вызывать через плагин `tauri-plugin-global-shortcut`, tray menu и кнопку главного окна. Учитывать отказ регистрации shortcut (конфликт с другим приложением), показывать предупреждение и разрешать назначить другую комбинацию.
+3. Позиционировать у правого верхнего края активного монитора, в границах `window.current_monitor()`/`available_monitors()` (API `tauri::Monitor`, аналог Electron `screen.getDisplayNearestPoint(...).workArea`); учитывать 125–200% DPI, несколько мониторов и перемещение taskbar.
 4. Открывать без запуска нового процесса, сохранять последнюю позицию по дисплею. Открытие warm overlay — целевой p95 до 500 мс на обычном ПК, измерить.
 5. Скрывать через Escape, повторный shortcut, кнопку X и при потере фокуса (последнее — настройка); редактирование не должно пропадать из-за blur. Никакого постоянного click-through поверх IDE в MVP.
 6. Верхняя зона: `Tracking/Paused`, текущая задача, таймер, Pause/Resume, переключение задачи и кнопка «+ Сессия».
@@ -113,7 +124,7 @@
 1. Поддержать `JiraProvider` с реализациями `Cloud` и `DataCenter/Server` через adapter interface. Версию/тип Jira определить в настройке соединения; не предполагать, что это обязательно Jira Cloud или Tempo.
 2. Функции: проверить соединение и пользователя, получить данные issue по ключу, отправить worklog, прочитать собственные worklog за период (если permissions позволяют), показать результат.
 3. Cloud: `POST /rest/api/3/issue/{issueIdOrKey}/worklog`; comment — Atlassian Document Format, `timeSpentSeconds`, `started`; Data Center: совместимый endpoint v2 с отличающейся моделью comment. Не смешивать форматы.
-4. Авторизация: поддерживать разрешённую в организации схему; для личного приложения возможен API token/PAT при наличии разрешения, OAuth рассматривать отдельно. Пароли в plaintext не хранить. Секреты шифровать через Electron `safeStorage`/OS DPAPI (или защищённое системное хранилище).
+4. Авторизация: поддерживать разрешённую в организации схему; для личного приложения возможен API token/PAT при наличии разрешения, OAuth рассматривать отдельно. Пароли в plaintext не хранить. Секреты шифровать через крейт `keyring` (обёртка над Windows Credential Manager/DPAPI) или `tauri-plugin-stronghold`; выбор зафиксировать в ADR при реализации Итерации 7.
 5. Перед POST всегда preview (issue, календарная дата, время, текст, итог). Пользователь выбирает записи и явно нажимает «Отправить».
 6. Сохранить mapping `localDraftId → remoteWorklogId`, timestamp отправки, статус, хэш payload. Для `pending/unknown` после сетевого таймаута не выполнять слепую повторную отправку: сначала reconciliation, так как сервер мог принять POST.
 7. Проверять локальные дубликаты и, по возможности, уже имеющиеся записи в Jira перед публикацией. Если Jira недоступна — сохранить черновик и дать retry после проверки.
@@ -155,43 +166,49 @@
 - `jira_submissions`: id, localDraftId, issueKey, payloadHash, remoteWorklogId?, state(`pending|posted|unknown|failed`), attemptedAt, resolvedAt?.
 - `settings`: key, value; sensitive values хранить отдельно в зашифрованном контейнере.
 
-Добавить версии схемы и миграции; SQLite WAL и транзакции для изменения сессий/отправок. Хранить базу в `app.getPath('userData')`; экспорт JSON/CSV по явному запросу пользователя; резервное копирование с предупреждением о чувствительности метаданных. Все изменения из overlay и основного окна выполняются через один сервис.
+Добавить версии схемы и миграции; SQLite WAL и транзакции для изменения сессий/отправок. Хранить базу в каталоге, который даёт `tauri::Manager::path().app_data_dir()` (аналог Electron `app.getPath('userData')`); экспорт JSON/CSV по явному запросу пользователя; резервное копирование с предупреждением о чувствительности метаданных. Все изменения из overlay и основного окна выполняются через один сервис (один Rust-процесс, общее состояние за `tauri::State`).
 
 ## 6. Структура репозитория
 
 ```
-src/
-  main/
-    app.ts
-    windows/{main-window,overlay-window}.ts
-    tray/tray.ts
-    shortcuts/shortcuts.ts
-    ipc/handlers.ts
-    platform/windows-activity-adapter.ts
-    tracking/{activity-tracker,session-engine,git-adapter}.ts
-    db/{database,migrations,repositories}.ts
-    integrations/jira/{jira-provider,jira-cloud,jira-datacenter}.ts
-    services/{session-service,worklog-service,settings-service}.ts
-  preload/{main-preload,overlay-preload}.ts
-  renderer/
-    app/{App,router}.tsx
-    pages/{dashboard,timeline,worklog-review,settings}/
-    overlay/{OverlayApp,session-editor,quick-switcher}/
-    shared/{components,hooks,styles}/
-  shared/{types,schemas,ipc-contracts,utils}/
-tests/{unit,integration,e2e,fixtures}/
+src-tauri/
+  Cargo.toml
+  tauri.conf.json
+  capabilities/{default.json,overlay.json}      # Tauri 2 permission-манифесты окон
+  icons/
+  src/
+    main.rs                                      # тонкая точка входа, вызывает lib::run()
+    lib.rs                                        # сборка Tauri Builder, регистрация команд/плагинов
+    windows/{main_window,overlay_window}.rs
+    tray.rs
+    shortcuts.rs
+    commands/{sessions,worklog,settings,tracking}.rs   # #[tauri::command] функции — аналог ipc/handlers.ts
+    platform/windows_activity_adapter.rs           # крейт `windows` (windows-rs)
+    tracking/{activity_tracker,session_engine,git_adapter}.rs
+    db/{database,migrations,repositories}.rs
+    integrations/jira/{jira_provider,jira_cloud,jira_datacenter}.rs
+    services/{session_service,worklog_service,settings_service}.rs
+src/                                               # frontend (Vite)
+  app/{App,router}.tsx
+  pages/{dashboard,timeline,worklog-review,settings}/
+  overlay/{OverlayApp,session-editor,quick-switcher}/
+  shared/{components,hooks,styles}/
+  shared-contracts/{types,schemas}.ts              # зеркалит Rust DTO, вручную синхронизируется или через ts-rs/specta
+tests/
+  (Rust: #[cfg(test)] рядом с модулями + src-tauri/tests/ для integration)
+  (Frontend: tests/unit, tests/e2e, tests/fixtures — Vitest)
 docs/{architecture,decisions,iterations,security}.md
 ```
 
-IPC через whitelist методов: `getToday`, `getSessions(date)`, `updateSession`, `splitSession`, `mergeSessions`, `setCurrentIssue`, `createManualSession`, `pauseTracking`, `resumeTracking`, `getWorklogDrafts`, `submitSelectedWorklogs`, `getSettings`, `updateSettings`. Аргументы валидировать в main, не отдавать renderer общий `ipcRenderer` или полный доступ к файловой системе. Из main отправлять `tracking:changed`, `sessions:changed`, `worklog:changed`; отписываться при уничтожении окна.
+Команды (Tauri commands) вместо Electron IPC whitelist: `get_today`, `get_sessions(date)`, `update_session`, `split_session`, `merge_sessions`, `set_current_issue`, `create_manual_session`, `pause_tracking`, `resume_tracking`, `get_worklog_drafts`, `submit_selected_worklogs`, `get_settings`, `update_settings`. Аргументы валидировать в Rust-коде команды (serde deserialize + явные проверки), не давать frontend прямой доступ к файловой системе/процессам сверх задекларированных в `capabilities/*.json` разрешений. Из Rust в frontend — события через `app_handle.emit("tracking:changed", payload)`/`"sessions:changed"`/`"worklog:changed"`; подписка на фронтенде через `listen()`, отписка (`unlisten`) при размонтировании компонента/уничтожении окна.
 
 ## 7. Нефункциональные требования
 
 - Локальная работа полностью без сети; Jira доступна только при явной синхронизации и отдельных opt-in обновлениях issue title.
 - Поведение предсказуемое: не приписывать пользователю нераспознанное время, отображать confidence и способ определения.
-- Оптимизация: целевой средний CPU трекера в простое <2% на тестовом Windows ПК; сбор не чаще согласованного интервала; замерить фактическую RAM Electron и зафиксировать в README вместо заведомо нереального лимита.
+- Оптимизация: целевой средний CPU трекера в простое <2% на тестовом Windows ПК; сбор не чаще согласованного интервала; замерить фактическое потребление RAM (у Tauri ожидаемо ниже, чем у Electron — один WebView2-рантайм на процесс, нет бандла Chromium) и зафиксировать в README вместо заведомо нереального лимита.
 - Обеспечить atomic writes, recovery при crash, защиту от дублирования, idempotent обработку локальных событий.
-- Security: `nodeIntegration=false`, `contextIsolation=true`, sandbox где совместим, узкий preload IPC API, проверка sender, CSP, никакого remote code/UI без изоляции, токены только в main process, безопасное логирование с redaction.
+- Security: минимальный набор Tauri **capabilities** на каждое окно (`capabilities/*.json` — overlay не получает разрешений, которых не требует; например, доступ к Jira HTTP-клиенту и файловой системе только там, где реально нужен), команды валидируют аргументы и вызывающее окно, CSP в `tauri.conf.json#app.security.csp`, никакого произвольного remote-контента в webview, секреты (Jira-токены) только в Rust-слое (никогда не передаются во frontend), безопасное логирование с redaction.
 - Без скриншотов, кейлоггера, записи текста редактора, терминальных команд и содержимого браузера. Статус работы всегда видим в трее, пауза доступна одним действием.
 - Никакого отправления Jira worklog без пользовательского подтверждения, никаких скрытых uploads или автообновлений без согласия.
 - Использование на корпоративном ПК и интеграция Jira должны соответствовать правилам работодателя.
@@ -202,15 +219,15 @@ IPC через whitelist методов: `getToday`, `getSessions(date)`, `updat
 **Правило:** каждая итерация — маленький рабочий коммит с тестами; последующие этапы не начинаются до выполнения acceptance criteria предыдущего. Не писать весь проект одной большой генерацией.
 
 ### Итерация 0. Исследование ограничений и каркас
-**Задачи:** подготовить Electron + React + TS + Vite; проверить на Windows 11 запуск tray, два окна, preload и global shortcut; зафиксировать ADR (builder, SQLite-driver, стратегия Win32 foreground detector, Jira provider). Создать README и команды dev/build/test.
-**Готово, когда:** `npm run dev`, `typecheck`, `test`, `build` работают; overlay открывается над другими окнами и закрывается Escape; нет предупреждений Electron security.
+**Задачи:** подготовить Tauri 2 + React + TS + Vite (`src-tauri/` Rust-ядро + `src/` frontend); проверить на Windows 11 запуск tray, два окна (main + overlay), Tauri-команд и global shortcut; зафиксировать ADR (SQLite-driver — `rusqlite`, стратегия Win32 foreground detector — крейт `windows`, Jira provider, capabilities-модель вместо Electron-sandbox). Создать README и команды dev/build/test (`npm run tauri dev`, `cargo test`, `npm run tauri build`).
+**Готово, когда:** `npm run tauri dev`, `cargo check`/`cargo clippy`, `cargo test`, `npm run tauri build` работают; overlay открывается над другими окнами и закрывается Escape; capabilities ограничены минимально необходимым на каждое окно.
 
 ### Итерация 1. SQLite и доменная модель
 **Задачи:** миграции и репозитории; типы events/sessions/drafts; валидация; транзакции; тестовая фикстура дня; один источник данных для main/overlay.
 **Готово, когда:** CRUD сессий и миграции протестированы; перезапуск не теряет записи; две параллельные правки не повреждают БД.
 
 ### Итерация 2. Windows Activity Tracker
-**Задачи:** адаптер Win32 foreground process; `powerMonitor`; состояния idle/lock/suspend; whitelist приложений; пауза через трей; устойчивый сбор раз в ~5 сек.
+**Задачи:** адаптер Win32 foreground process (крейт `windows`); idle/lock/suspend через `GetLastInputInfo`+session notifications; whitelist приложений; пауза через трей; устойчивый сбор раз в ~5 сек (Rust `tokio`/`std::thread` таймер, не JS-интервал).
 **Готово, когда:** переключение WebStorm ↔ рабочий терминал отражается в событиях; 3 минуты бездействия не засчитываются; lock/sleep/restart не образуют искусственные часы; сохраняется только разрешённая метаинформация.
 
 ### Итерация 3. Git context и связывание с Jira key
@@ -284,22 +301,24 @@ IPC через whitelist методов: `getToday`, `getSessions(date)`, `updat
 2. Сначала выдай краткий implementation plan, список архитектурных рисков и вопросы только по блокирующим обстоятельствам (например, корпоративная Jira Cloud/DC/Tempo и схема аутентификации). Пока неизвестен тип Jira, использовать interface + mock; не останавливать локальный MVP.
 3. Выполни **только Итерацию 0**, покажи изменённые файлы, команды запуска, список проверок и результаты. После этого остановись и дождись команды `Следующая итерация`.
 4. На каждой следующей итерации: реализуй функциональность, добавь тесты, выполни `typecheck`, `lint`, `test`, `build` где доступны, поправь документацию `docs/iterations/NN.md`, сделай коммит, выведи acceptance checklist и оставшиеся риски.
-5. Перед внедрением native-модуля/OS-helper проверь его совместимость с Electron, Windows x64 и builder, зафиксируй выбор в ADR. Не использовать мок вместо реального трекинга без явной пометки и smoke теста.
+5. Перед внедрением нового крейта с нативными/FFI-зависимостями проверь его совместимость с целевым Windows x64 target (`x86_64-pc-windows-msvc`) и сборкой через `tauri build`, зафиксируй выбор в ADR. Не использовать мок вместо реального трекинга без явной пометки и smoke теста.
 6. Не делать опасных упрощений: не хранить Jira secrets plaintext; не получать произвольные IPC методы; не считать сон рабочим временем; не отправлять Jira без подтверждения; не приписывать неизвестные интервалы задачам.
 7. Если этап требует моих ручных действий (например, создание Jira token, запуск packaged app на Windows или проверка двух мониторов), дай точный чеклист и отдели автоматические тесты от ручных.
 
 **Первая команда для Claude Code:**
 
-> Ознакомься с `DEVLOG_CLAUDE_CODE_TZ.md`. Реализуй только Итерацию 0 с минимальным работоспособным приложением Electron + React + TypeScript + Vite, безопасным preload, системным треем, всегда-поверх overlay по горячей клавише и настройкой проекта для тестирования. Обоснуй технические решения, выполни доступные проверки, зафиксируй известные риски и остановись до следующей итерации.
+> Ознакомься с `DEVLOG_CLAUDE_CODE_TZ.md`. Реализуй только Итерацию 0 с минимальным работоспособным приложением Tauri 2 + React + TypeScript + Vite, безопасной моделью capabilities, системным треем, всегда-поверх overlay по горячей клавише и настройкой проекта для тестирования. Обоснуй технические решения, выполни доступные проверки, зафиксируй известные риски и остановись до следующей итерации.
 
 ## 12. Технические источники
 
-- Electron `BrowserWindow`: https://www.electronjs.org/docs/latest/api/browser-window/
-- Electron `globalShortcut`: https://www.electronjs.org/docs/latest/api/global-shortcut/
-- Electron `screen`: https://www.electronjs.org/docs/latest/api/screen
-- Electron `powerMonitor`: https://www.electronjs.org/docs/latest/api/power-monitor
-- Electron `safeStorage`: https://www.electronjs.org/docs/latest/api/safe-storage
-- Electron security: https://www.electronjs.org/docs/latest/tutorial/security
+- Tauri `WebviewWindow`: https://v2.tauri.app/reference/javascript/api/namespacewebviewwindow/
+- Tauri `tauri-plugin-global-shortcut`: https://v2.tauri.app/plugin/global-shortcut/
+- Tauri `Monitor`/multi-monitor API: https://v2.tauri.app/reference/javascript/api/namespacewindow/#availablemonitors
+- Tauri tray icon: https://v2.tauri.app/learn/system-tray/
+- Tauri security / capabilities: https://v2.tauri.app/security/capabilities/
+- Tauri CSP: https://v2.tauri.app/security/csp/
+- `windows-rs` (Win32 биндинги для Rust): https://github.com/microsoft/windows-rs
+- `rusqlite`: https://docs.rs/rusqlite/
 - Jira Cloud issue worklogs API: https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-worklogs/
 - Jira Data Center worklogs API: https://developer.atlassian.com/server/jira/platform/rest/v10005/api-group-issue/
 
