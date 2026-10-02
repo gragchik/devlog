@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Базовые разрешения главного окна. Вся доменная логика идёт через собственные #[tauri::command] (они не гейтятся этой ACL-системой), поэтому здесь — только безопасный core-минимум, без доступа к FS/shell/процессам.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

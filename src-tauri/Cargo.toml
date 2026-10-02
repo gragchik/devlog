@@ -1,0 +1,27 @@
+[package]
+name = "devlog"
+version = "0.0.0"
+description = "DevLog — персональный автоматический Worklog для Windows"
+edition = "2021"
+rust-version = "1.75"
+
+[lib]
+# Tauri 2 требует отдельного cdylib-таргета для мобильных платформ;
+# на Windows нам нужен только обычный бинарник, но структура main.rs -> lib.rs
+# — стандартная конвенция Tauri (упрощает добавление мобильных таргетов позже).
+name = "devlog_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[[bin]]
+name = "devlog"
+path = "src/main.rs"

@@ -9,45 +9,59 @@
 Технические решения (ADR): [`docs/decisions/`](docs/decisions/).
 Статус по итерациям: [`docs/iterations/`](docs/iterations/).
 
-**Статус проекта:** Итерация 0 (каркас) — см.
-[`docs/iterations/00.md`](docs/iterations/00.md) для деталей и известных
-рисков. Activity Tracker, SQLite, Git/Jira-интеграция и реальный UI **ещё не
-реализованы** — приложение сейчас демонстрирует только рабочий
-скелет (окна, трей, hotkey, типизированный IPC).
+**Статус проекта:** Итерация 0 (каркас, на **Tauri** — см. примечание о
+миграции в начале ТЗ) — см. [`docs/iterations/00.md`](docs/iterations/00.md)
+для деталей и известных рисков. Activity Tracker, SQLite, Git/Jira-интеграция
+и реальный UI **ещё не реализованы** — приложение сейчас демонстрирует
+только рабочий скелет (окна, трей, hotkey, типизированные команды).
+
+> Ранняя версия (Итерации 0–1) была реализована на Electron и переписана
+> на Tauri по решению пользователя — см. `docs/*/electron-archive/` и
+> git-историю (коммиты `a8b22e2`, `7283498`).
 
 ## Требования
 
 - Windows 10/11 x64.
-- Node.js — см. `engines` в `package.json` (устанавливается через nvm-windows
-  или напрямую с nodejs.org).
+- Node.js ^20.19 / ^22.12 / >=24 (см. `package.json#engines`, если есть).
+- **Rust** (через [rustup](https://rustup.rs)) + **MSVC Build Tools**
+  (компонент «Desktop development with C++» из
+  [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)) —
+  без них Rust-код не слинкуется на Windows.
+- WebView2 Runtime — на Windows 11 предустановлен; на Windows 10 может
+  потребоваться установка отдельно.
 
 ## Команды
 
 ```bash
-npm install     # установка зависимостей (см. примечание ниже про Electron)
-npm run dev     # запуск в dev-режиме (HMR для renderer, автоперезапуск main/preload)
-npm run build   # production-сборка main/preload/renderer в out/
-npm run preview # запуск собранного build без dev-сервера
-npm run typecheck
-npm run lint
-npm run test
+npm install          # установка зависимостей frontend
+npm run dev           # tauri dev — поднимает Vite dev-сервер + Rust-ядро, открывает приложение
+npm run build          # tauri build — production-сборка + installer (NSIS)
+npm run build:vite     # только frontend-бандл, без Rust/упаковки
+npm run typecheck      # tsc --noEmit (frontend)
+npm run lint           # eslint (frontend)
+
+cd src-tauri
+cargo check            # быстрая проверка типов Rust-кода
+cargo clippy --all-targets   # линт
+cargo test              # unit-тесты Rust-кода
 ```
 
-> **Примечание:** при первом `npm install` может не успеть скачаться
-> бинарник Electron (~245MB с GitHub releases) — если `npm run dev` упадёт с
-> `Error: Electron uninstall`, выполните `node node_modules/electron/install.js`
-> повторно и запустите `npm run dev` ещё раз.
+> **Первая сборка Rust-кода занимает ~5 минут** (компилируются все
+> транзитивные зависимости Tauri с нуля). Дальнейшие инкрементальные
+> пересборки — секунды.
 
 ## Структура
 
 ```
-src/
-  main/        — Electron main process: окна, трей, shortcuts, IPC, (позже) трекинг/БД/Jira
-  preload/     — типизированные preload-скрипты (отдельно для main-window и overlay)
-  renderer/    — React-приложения (main-window, overlay) и общие компоненты
-  shared/      — код без зависимостей от Electron: IPC-контракты, типы, утилиты
-tests/
-  unit/        — Vitest, чистые функции и логика без Electron
+src-tauri/           — Rust-ядро (Tauri): окна, трей, shortcuts, команды, (позже) БД/трекинг/Jira
+  src/commands/       — #[tauri::command] функции, вызываемые из frontend через invoke()
+  src/windows/        — создание/позиционирование main-window и overlay
+  src/tray/           — системный трей
+  capabilities/       — permission-манифесты (по одному на окно)
+src/                 — frontend (React + TypeScript + Vite)
+  main-window/        — главное окно
+  overlay/            — overlay поверх других приложений
+  shared/             — типы, синхронизированные вручную с Rust DTO; общие стили
 docs/
   architecture.md, decisions/, iterations/
 ```

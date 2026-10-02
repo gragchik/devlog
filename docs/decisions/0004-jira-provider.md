@@ -1,6 +1,10 @@
 # ADR-0004: Jira-провайдер — interface + Cloud primary + Mock
 
-**Статус:** принято; реализация — Итерация 7.
+**Статус:** принято; реализация — Итерация 7. **Решение стек-агностично** —
+при переходе с Electron на Tauri (2026-10-02) не изменилось: `JiraProvider`
+в Rust остаётся trait/interface с теми же реализациями
+(`JiraCloudProvider`, `MockJiraProvider`, `JiraDataCenterProvider` позже),
+только язык реализации меняется с TypeScript на Rust.
 
 ## Контекст
 

@@ -1,0 +1,80 @@
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+body {
+  margin: 0;
+  background: #0f172a;
+  color: #e2e8f0;
+}
+
+.app-shell {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.card {
+  background: #1e293b;
+  border-radius: 8px;
+  padding: 16px;
+  margin-top: 16px;
+}
+
+.card dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  margin: 0;
+}
+
+.card dt {
+  color: #94a3b8;
+}
+
+.error {
+  color: #f87171;
+}
+
+.overlay-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #1e293b;
+  color: #e2e8f0;
+  border: 1px solid #334155;
+}
+
+.overlay-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: #0f172a;
+}
+
+.overlay-title {
+  font-weight: 600;
+}
+
+.overlay-status {
+  margin-left: auto;
+  font-size: 13px;
+  color: #94a3b8;
+}
+
+.overlay-close {
+  border: none;
+  background: transparent;
+  color: #e2e8f0;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.overlay-body {
+  padding: 14px;
+  font-size: 13px;
+}

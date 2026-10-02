@@ -1,137 +1,106 @@
-# Архитектура DevLog
+# Архитектура DevLog (Tauri)
 
-Этот документ описывает принятые структурные решения. Детали отдельных
-технических выборов — в `docs/decisions/*.md` (ADR). Статус по итерациям —
-в `docs/iterations/*.md`.
+Этот документ описывает принятые структурные решения для Tauri-реализации
+(заменяет прежнюю Electron-версию — см. историю в git и
+`docs/*/electron-archive/`). Детали отдельных технических выборов —
+`docs/decisions/*.md` (ADR). Статус по итерациям — `docs/iterations/*.md`.
 
-## Процессы и окна
+## Процесс и окна
 
-- **Main process** (`src/main/`) — единственный источник правды: владеет
-  SQLite (с Итерации 1), Activity Tracker (с Итерации 2), Git/Jira
-  адаптерами, глобальным shortcut, треем. Renderer-процессы никогда не
-  обращаются к файловой системе, сети или дочерним процессам напрямую.
-- **Main window** (`src/main/windows/main-window.ts`) — создаётся при
-  старте, закрытие (`X`) не завершает процесс: `close` перехватывается и
-  заменяется на `hide()`, пока приложение не получает явную команду выхода
-  (`before-quit` → `markAppQuitting()`). Это реализует FR-01.1 ("закрытие
-  главного окна не завершает слежение").
-- **Overlay window** (`src/main/windows/overlay-window.ts`) — отдельное
-  `BrowserWindow`: `frame: false`, `alwaysOnTop: true`, `skipTaskbar: true`,
-  создаётся один раз и держится скрытым (`hide()`), а не уничтожается —
-  это даёт быстрое повторное открытие без пересоздания процесса/окна
-  (цель FR-06.4, p95 ~500мс; фактическое время открытия пока не замерено
-  инструментально — см. риски Итерации 0).
-- **Tray** (`src/main/tray/tray.ts`) — не зависит от видимости окон; меню
-  строится заново при каждом изменении состояния (`updateTrayState`).
+В отличие от Electron (main-процесс + по процессу на каждый renderer),
+**у Tauri один процесс** на всё приложение: Rust-ядро и все
+webview-окна (через системный WebView2 на Windows) работают в одном
+процессе ОС. Это упрощает модель состояния (не нужен IPC для доступа к
+"серверному" состоянию — оно просто в памяти Rust-процесса, доступно через
+`tauri::State`/`AppHandle`), но означает, что падение Rust-кода валит всё
+приложение целиком (ещё один довод писать Rust-код defensively: `Result`,
+не `unwrap()` в коде, который может быть вызван из runtime-путей).
 
-У main-window и overlay-window — **разные preload-скрипты**
-(`main-preload.ts` / `overlay-preload.ts`) и, соответственно, разные формы
-API в `window.devlog` на renderer-стороне. Это сознательное решение: overlay
-не должен иметь доступ к методам, которые имеют смысл только в контексте
-главного окна (и наоборот), даже если сейчас (Итерация 0) оба API
-пересекаются почти полностью.
+- **Main window** (`label: "main"`, объявлено декларативно в
+  `tauri.conf.json`) — создаётся автоматически при старте. Закрытие (`X`)
+  не завершает процесс: `on_window_event` в `lib.rs` перехватывает
+  `WindowEvent::CloseRequested`, вызывает `api.prevent_close()` и
+  `window.hide()` вместо реального закрытия (FR-01.1).
+- **Overlay window** (`label: "overlay"`, создаётся программно в
+  `windows/overlay_window.rs::ensure_overlay_window`) — `decorations(false)`,
+  `always_on_top(true)`, `skip_taskbar(true)`, создаётся один раз при
+  `setup()` и держится скрытым (`visible(false)` в билдере + `hide()`
+  вместо `close()`), что даёт быстрое повторное открытие без пересоздания
+  окна (FR-06.4).
+- **Tray** (`tray/mod.rs`) — создаётся через `TrayIconBuilder` в Rust (не
+  декларативно в `tauri.conf.json` — нужна динамика: пункт
+  "Приостановить/Продолжить" меняет текст через `MenuItem::set_text`).
+  Иконка встроена в бинарник через `include_bytes!` на этапе компиляции —
+  не нужно резолвить путь к файлу в рантайме (в отличие от Electron, где
+  путь к иконке трея приходилось резолвить относительно `__dirname`,
+  что ломается по-разному в dev и после упаковки).
 
-## IPC: типизированный whitelist
+## Capabilities вместо IPC whitelist
 
-Единственный канал связи renderer → main — вызовы из `src/shared/ipc-contracts/`:
+Electron-версия использовала `contextBridge` + явный whitelist каналов в
+`ipcMain.handle`. У Tauri другая модель:
 
-- `channels.ts` — явный список допустимых каналов (`IPC_CHANNELS`). Всё, что
-  не входит в этот список, не регистрируется в `ipcMain.handle` и не
-  экспонируется через `contextBridge`.
-- `types.ts` — типы запрос/ответ для каждого канала, используются и в
-  preload (аргументы `ipcRenderer.invoke`), и в main (`ipcMain.handle`), и в
-  renderer (через импорт из `@shared/...`) — один источник истины для формы
-  данных на обеих сторонах IPC-границы.
+- **Собственные команды приложения** (`#[tauri::command]`, например
+  `get_app_info` в `commands/app_info.rs`) вызываются из frontend через
+  `invoke('get_app_info')` (`@tauri-apps/api/core`) и **не гейтятся**
+  permission-системой — её область действия — core/plugin API, не
+  произвольные функции, которые сам разработчик зарегистрировал в
+  `tauri::generate_handler!`. Контроль доступа к ним — факт регистрации в
+  `generate_handler!`, ничего больше (это даже проще, чем Electron
+  whitelist, т.к. нет отдельного слоя сериализации аргументов, который
+  нужно было вручную валидировать на стороне `ipcMain` — `serde`
+  десериализует и валидирует типы автоматически).
+- **Встроенные/плагинные API** (открытие файлов, скрытие окна и т.п.)
+  гейтятся через **capabilities** — JSON-манифесты в
+  `src-tauri/capabilities/*.json`, каждый привязан к конкретным окнам по
+  `label` (поле `"windows"`). У нас два манифеста:
+  `capabilities/default.json` (окно `main`) и `capabilities/overlay.json`
+  (окно `overlay`) — оба сейчас на базовом `core:default`, т.к. ни одно
+  окно не делает ничего более привилегированного, чем скрыть себя
+  (`getCurrentWindow().hide()` в overlay, по Escape/кнопке `✕`).
+  Это прямая реализация принципа "у каждого окна — только необходимые ему
+  права" (ТЗ, раздел 7): overlay **физически не может** вызвать, например,
+  файловый API, если это не разрешено в его собственном capability-файле,
+  даже если такой API когда-нибудь включат для main-окна.
+- Shared TS-типы контрактов команд живут в `src/shared/types/` (например
+  `app-info.ts`) и **синхронизируются вручную** с Rust DTO
+  (`#[derive(Serialize)]` структуры в `commands/*.rs`) — Tauri, в отличие
+  от нашего Electron IPC-слоя, не даёт одного файла типов на оба конца
+  границы автоматически. Если расхождение станет проблемой по мере роста
+  числа команд — рассмотреть `tauri-specta`/`ts-rs` (не делаем этого в
+  Итерации 0, намеренно, чтобы не тащить лишнюю абстракцию раньше, чем она
+  понадобится).
 
-Каждый `ipcMain.handle` в `src/main/ipc/handlers.ts` проверяет
-`event.senderFrame` на соответствие одному из созданных приложением окон
-(`isTrustedSender`), а привилегированные операции (например,
-`overlay:close`) — что отправитель это именно overlay, а не main-window
-(`isOverlaySender`). Это защита от компрометированного/неожиданного sender'а
-(ТЗ, раздел 7: "проверка sender").
+## Security
 
-Все окна создаются с `nodeIntegration: false`, `contextIsolation: true`,
-`sandbox: true` — renderer не имеет доступа ни к Node.js API, ни к
-нефильтрованному `ipcRenderer`.
-
-## Shared-код
-
-`src/shared/` — код без зависимостей от Electron API, используемый и в
-main, и в renderer (через алиас `@shared/*` в обоих `tsconfig.*.json` и в
-`electron.vite.config.ts`):
-
-- `ipc-contracts/` — см. выше.
-- `types/` — доменные типы без побочных эффектов (например,
-  `TrackingStatus`).
-- `utils/` — чистые функции (например, `secondsToHms`), тестируемые в
-  изоляции через Vitest без поднятия Electron.
-
-## Security-периметр
-
-`src/main/security.ts` применяется один раз при старте (`app.whenReady`):
-
-- `setWindowOpenHandler` на каждый новый `webContents` → `{ action: 'deny' }`
-  (никаких всплывающих Electron-окон по клику на ссылку — внешние ссылки
-  уходят в системный браузер через `shell.openExternal`, см.
-  `main-window.ts`).
-- `will-navigate` блокируется для всего, что не `file://` и не
-  `http://localhost` (последнее — только для dev-сервера Vite).
-- CSP-заголовок на все ответы через `session.defaultSession.webRequest`
-  **плюс** `<meta http-equiv="Content-Security-Policy">` в каждом HTML (два
-  слоя защиты — на случай, если один механизм не сработает для конкретного
-  протокола/типа ресурса).
-
-## Слой данных (Итерация 1)
-
-`src/main/db/`:
-
-- `database.ts` — `createDatabase(filePath)`: открывает файл, включает
-  `journal_mode = WAL` и `foreign_keys = ON`, применяет миграции. Единая
-  точка создания соединения — используется и реальным приложением
-  (`app-database.ts`), и тестами (временный файл на диске,
-  `tests/integration/helpers/temp-database.ts`).
-- `app-database.ts` — синглтон `getAppDatabase()` на реальном пути
-  `app.getPath('userData')/devlog.sqlite3`. Открывается один раз при
-  `app.whenReady()` (`src/main/index.ts`), закрывается в `before-quit`.
-  Один и тот же процесс main обслуживает и главное окно, и overlay — значит,
-  они неизбежно работают с одним и тем же соединением (ТЗ: "Все изменения
-  из overlay и основного окна выполняются через один сервис"). При первом
-  открытии чистит `session_edits` старше 30 дней (FR-04.8).
-- `migrate.ts` + `migrations/000N-*.ts` — пронумерованные миграции,
-  журналируются в `_migrations`; каждая применяется в собственной
-  транзакции. Повторный запуск на той же БД — no-op.
-- `repositories/*.ts` — по одному классу на таблицу (`ProjectsRepository`,
-  `ActivityEventsRepository`, `WorkSessionsRepository`,
-  `SessionEditsRepository`, `WorklogDraftsRepository`,
-  `SettingsRepository`). `activity_events` — только `insert`/чтение
-  (первичная история неизменяема); мутации `work_sessions`
-  (`update`/`softDelete`/`restore`/`undoLastEdit`) всегда внутри
-  `db.transaction()` и атомарно пишут snapshot до/после в `session_edits`.
-
-Время хранится как **эпоха в секундах UTC** (`INTEGER`) во всех таблицах;
-`timezoneId` (IANA, например `Europe/Bishkek`) — отдельным полем на
-`work_sessions`, для будущего деления по локальным суткам (Session Engine,
-Итерация 4 — в Итерации 1 эта логика не реализована).
-
-**Чего в этом слое сознательно нет:** определение перекрытия интервалов и
-автоматическое разрешение конфликтов (FR-04.6), split/merge (FR-04),
-таблицы `issues_cache`/`jira_submissions` (появятся в Итерации 7 вместе с
-Jira-интеграцией — см. ADR-0004). IPC-каналы к этим репозиториям тоже не
-добавлены — Dashboard/Timeline (Итерация 5) и overlay-редактирование
-(Итерация 6) подключат их позже; Итерация 1 — только сам слой данных и его
-тесты.
+- **CSP** — `tauri.conf.json#app.security.csp`, применяется Tauri
+  автоматически ко всем webview (эквивалент Electron CSP-заголовка +
+  meta-тега, но не нужно дублировать в HTML).
+- **Никакого произвольного remote-контента** — оба окна грузят только
+  собственные `index.html`/`overlay.html` (dev: с Vite dev-сервера на
+  `localhost:1420`, prod: из встроенного в бинарник `frontendDist`).
+- **Single instance** (FR-01.3) — `tauri-plugin-single-instance`,
+  регистрируется первым плагином в билдере (это требование самого плагина).
+- Секреты (будущие Jira-токены, Итерация 7) будут жить только в
+  Rust-слое — frontend их не увидит, в соответствии с тем же принципом,
+  что был в Electron-версии ("токены только в main process").
 
 ## Что сознательно НЕ сделано в Итерации 0
 
-(чтобы не создавать иллюзию готовности) — подробности и обоснование в
-`docs/iterations/00.md`:
-
-- Нет SQLite, нет Activity Tracker, нет Git/Jira адаптеров, нет
-  Session Engine — только заглушка `trackingStatusStub: 'UNKNOWN'`.
-- Нет UI для Dashboard/Timeline/Settings — main window показывает только
-  статус соединения IPC.
-- Нет сохранения позиции overlay между запусками (FR-06.4 "сохранять
-  последнюю позицию по дисплею") — пока всегда позиционируется у правого
-  верхнего края ближайшего к курсору дисплея.
-- Нет UI переназначения hotkey при конфликте (FR-06.2) — только
-  `Notification` с предупреждением.
+- **Нет SQLite** — будет `rusqlite` (ADR готовится к Итерации 1, по
+  аналогии с тем, как это было устроено на Electron/`better-sqlite3`, но
+  без проблемы ABI-совместимости нативных Node-модулей: Rust-зависимости
+  компилируются прямо в бинарник).
+- **Нет Activity Tracker/Git/Jira** — Итерации 2/3/7.
+- **Нет UI для Dashboard/Timeline/Settings** — main window показывает
+  только статус соединения с Rust-ядром через `get_app_info`.
+- **Workarea-aware позиционирование overlay** — tao/Tauri `Monitor` не
+  даёт `workArea` (в отличие от Electron `display.workArea`); сейчас
+  используются полные границы монитора. Точная версия через Win32
+  `GetMonitorInfoW` — Итерация 6 (вместе с остальными тест-кейсами FR-06 на
+  несколько мониторов/DPI).
+- **Нет UI переназначения hotkey при конфликте** — только `eprintln!` в
+  консоль (Tauri на Windows не имеет прямого аналога Electron
+  `Notification` "из коробки" без отдельного плагина
+  `tauri-plugin-notification`; добавить, если понадобится, не раньше
+  Итерации 6, когда будет реальный UI настроек).

@@ -16,3 +16,5 @@ Thumbs.db
 .idea/
 .claude/settings.local.json
 *.tsbuildinfo
+src-tauri/target/
+src-tauri/gen/
