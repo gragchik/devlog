@@ -1,23 +1,6 @@
+use crate::domain::tracking_status::TrackingStatus;
 use serde::Serialize;
 use tauri::AppHandle;
-
-/// Состояния движка трекинга (ТЗ, раздел 4). Реального Activity Tracker в
-/// Итерации 0 нет — тип используется только как заглушка для сквозной
-/// проверки команды `get_app_info`. Реализация — Итерация 2/4.
-// Остальные варианты, кроме Unknown, пока нигде не конструируются — реальный
-// движок появится в Итерации 2/4. Подавляем dead_code, а не удаляем
-// варианты, чтобы тип сразу соответствовал полному контракту ТЗ.
-#[allow(dead_code)]
-#[derive(Serialize)]
-#[serde(rename_all = "UPPERCASE")]
-pub enum TrackingStatus {
-    Tracking,
-    Idle,
-    Paused,
-    Locked,
-    Suspended,
-    Unknown,
-}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]

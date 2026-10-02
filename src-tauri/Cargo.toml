@@ -3,7 +3,7 @@ name = "devlog"
 version = "0.0.0"
 description = "DevLog — персональный автоматический Worklog для Windows"
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.85" # фактический MSRV после добавления uuid 1.26 (см. Cargo.lock)
 
 [lib]
 # Tauri 2 требует отдельного cdylib-таргета для мобильных платформ;
@@ -21,7 +21,13 @@ tauri-plugin-global-shortcut = "2"
 tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+uuid = { version = "1.20.0", features = ["v4"] }
+anyhow = "1.0.104"
 
 [[bin]]
 name = "devlog"
 path = "src/main.rs"
+
+[dev-dependencies]
+tempfile = "3.27.0"

@@ -85,6 +85,61 @@ Electron-версия использовала `contextBridge` + явный whit
   Rust-слое — frontend их не увидит, в соответствии с тем же принципом,
   что был в Electron-версии ("токены только в main process").
 
+## Слой данных (Итерация 1)
+
+`src-tauri/src/db/`:
+
+- `database.rs` — `create_database(path)`: открывает файл, включает
+  `journal_mode = WAL` и `foreign_keys = ON`, применяет миграции. Единая
+  точка создания соединения — используется и реальным приложением
+  (`app_database.rs`), и тестами (`db::test_support::temp_database()`,
+  временный файл на диске через крейт `tempfile`).
+- `app_database.rs` — `AppDatabase(Mutex<Connection>)`, управляется как
+  Tauri managed state (`app.manage(...)`), открывается в `setup()` до
+  создания окон, путь — `app.path().app_data_dir()` (аналог Electron
+  `app.getPath('userData')`). Один и тот же процесс Tauri обслуживает и
+  главное окно, и overlay — значит, они неизбежно работают с одним и тем
+  же `AppDatabase` (ТЗ: "Все изменения из overlay и основного окна
+  выполняются через один сервис"). При инициализации чистит
+  `session_edits` старше 30 дней (FR-04.8).
+- `migrations/` — пронумерованные миграции (`m0001_initial_schema.rs` и
+  далее), журналируются в `_migrations`; каждая применяется в собственной
+  транзакции. Повторный запуск на той же БД — no-op.
+- `repositories/*.rs` — **свободные функции** над `&Connection`/
+  `&mut Connection` (не классы, как было в TS-версии — идиоматичнее для
+  Rust, без self-referential borrow-проблем): `projects`,
+  `activity_events` (только `insert`/чтение — первичная история
+  неизменяема), `work_sessions` (CRUD + атомарные
+  `update`/`soft_delete`/`restore`/`undo_last_edit`, каждая мутация внутри
+  `conn.transaction()` вместе со snapshot-записью в `session_edits`),
+  `session_edits`, `worklog_drafts`, `settings`.
+- `error.rs` — `RepoError` (`Sqlite`/`InvalidInterval`/`NotFound`) поверх
+  `rusqlite::Error`, чтобы вызывающий код (и тесты) мог различать "БД
+  недоступна" от "патч нарушает доменный инвариант" (`end > start`).
+
+Время хранится как **эпоха в секундах UTC** (`i64`) во всех таблицах;
+`timezoneId` (IANA, например `Europe/Bishkek`) — отдельным полем на
+`work_sessions`, для будущего деления по локальным суткам (Session Engine,
+Итерация 4 — в Итерации 1 эта логика не реализована).
+
+**Доменные типы** — `src-tauri/src/domain/` (аналог прежнего
+`src/shared/types/`): `Project`, `ActivityEvent`, `WorkSession`,
+`SessionEdit`, `WorklogDraft` + связанные enum'ы (`Confidence`,
+`TrackingStatus`, `WorkSessionSource/ReviewStatus`,
+`SessionEditOperation`). Все `#[derive(Serialize, Deserialize)]` — готовы
+к будущей IPC-экспозиции, но пока ни одна IPC-команда их не использует
+(только `get_app_info` из Итерации 0). Ручная синхронизация с TS-типами
+фронтенда (как и раньше) — не автогенерируется.
+
+**Чего в этом слое сознательно нет:** определение перекрытия интервалов и
+автоматическое разрешение конфликтов (FR-04.6), split/merge (FR-04),
+таблицы `issues_cache`/`jira_submissions` (появятся в Итерации 7 вместе с
+Jira-интеграцией). IPC-команды к этим репозиториям тоже не добавлены —
+Dashboard/Timeline (Итерация 5) и overlay-редактирование (Итерация 6)
+подключат их позже; Итерация 1 — только сам слой данных и его тесты
+(отсюда `#[allow(dead_code)]` на модулях `db`/`domain` в `lib.rs` — временная
+и осознанная пометка, снимется по мере подключения).
+
 ## Что сознательно НЕ сделано в Итерации 0
 
 - **Нет SQLite** — будет `rusqlite` (ADR готовится к Итерации 1, по
