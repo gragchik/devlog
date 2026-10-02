@@ -1,23 +1,18 @@
-use std::sync::Mutex;
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager};
 
+use crate::tracking::tracker::ActivityTrackerHandle;
 use crate::windows::main_window::show_main_window;
 use crate::windows::overlay_window::toggle_overlay;
-
-/// Заглушка на Итерацию 0: реальной паузы трекера ещё нет (появится в
-/// Итерации 2). Переключатель здесь только проверяет механику меню трея и
-/// не должен восприниматься как настоящий Pause/Resume (FR-01.2/FR-01.4).
-pub struct TrackerPauseStub(pub Mutex<bool>);
 
 const TRAY_ICON_BYTES: &[u8] = include_bytes!("../../icons/tray.png");
 
 pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
     let open_item = MenuItem::with_id(app, "open", "Открыть", true, None::<&str>)?;
     let overlay_item = MenuItem::with_id(app, "show_overlay", "Показать overlay", true, None::<&str>)?;
-    let pause_item = MenuItem::with_id(app, "toggle_pause", "Приостановить (заглушка)", true, None::<&str>)?;
+    let pause_item = MenuItem::with_id(app, "toggle_pause", "Приостановить", true, None::<&str>)?;
     let today_item = MenuItem::with_id(app, "today", "Сегодня", true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, "quit", "Выход", true, None::<&str>)?;
 
@@ -31,7 +26,7 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
     TrayIconBuilder::new()
         .icon(icon)
         .menu(&menu)
-        .tooltip("DevLog — Tracking status: Unknown (итерация 0)")
+        .tooltip("DevLog — Tracking")
         .on_menu_event(move |app, event| match event.id().as_ref() {
             "open" => show_main_window(app),
             "show_overlay" => {
@@ -40,10 +35,13 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
             "today" => show_main_window(app),
             "quit" => app.exit(0),
             "toggle_pause" => {
-                let state = app.state::<TrackerPauseStub>();
-                let mut paused = state.0.lock().expect("tray pause mutex poisoned");
-                *paused = !*paused;
-                let label = if *paused { "Продолжить (заглушка)" } else { "Приостановить (заглушка)" };
+                // FR-01.2/FR-01.4: реальная пауза трекера (не заглушка —
+                // появилась вместе с Activity Tracker, Итерация 2). Поток
+                // опроса сам проверяет этот флаг на каждом poll и пишет
+                // PAUSED вместо TRACKING, пока он установлен.
+                let tracker = app.state::<ActivityTrackerHandle>();
+                let now_paused = tracker.toggle_paused();
+                let label = if now_paused { "Продолжить" } else { "Приостановить" };
                 let _ = pause_item.set_text(label);
             }
             _ => {}

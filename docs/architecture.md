@@ -140,6 +140,44 @@ Dashboard/Timeline (Итерация 5) и overlay-редактирование 
 (отсюда `#[allow(dead_code)]` на модулях `db`/`domain` в `lib.rs` — временная
 и осознанная пометка, снимется по мере подключения).
 
+## Activity Tracker (Итерация 2)
+
+`src-tauri/src/platform/windows_activity_adapter.rs` — тонкие обёртки над
+Win32 (крейт `windows`, ADR-0007): `get_foreground_process_name()`,
+`get_system_idle_seconds()`, `is_session_locked(foreground_process_name)`.
+Не покрыты unit-тестами (нельзя осмысленно мокнуть ОС) — проверены вручную
+на реальной машине (`cargo test manual_smoke -- --ignored --nocapture`) и
+сквозным прогоном реального приложения.
+
+`src-tauri/src/tracking/`:
+
+- `whitelist.rs` — `WhitelistEntry{process_name, category}`,
+  `default_whitelist()` (WebStorm/IDE-семейство JetBrains, VS Code,
+  основные терминалы Windows), `load_whitelist(conn)` (читает
+  пользовательский override из `settings` под ключом
+  `activityTracker.whitelist`, молча откатывается на дефолт при
+  отсутствии/битом JSON — UI редактирования появится в Итерации 5).
+- `engine.rs` — **чистая** функция `decide(signals, whitelist) ->
+  DecidedEvent`, без каких-либо Win32/БД вызовов внутри — вся ветвящаяся
+  логика состояний полностью unit-тестируема (10 тестов на приоритеты
+  Paused/Suspended/Locked/Idle/Unknown/Tracking). Приоритет сверху вниз:
+  ручная пауза → разрыв между poll похожий на сон → заблокированный экран
+  → превышен idle-порог → foreground-detector не смог определить процесс
+  (Unknown) → проверка whitelist. Для не-whitelisted процессов реальное
+  имя **не сохраняется** (`appCategory: "excluded"`, `processName:
+  "excluded"`) — FR-02.3/FR-02.4.
+- `tracker.rs` — `ActivityTrackerHandle` (атомарный флаг паузы, читается
+  треем через `app.state::<ActivityTrackerHandle>()`) и `start(app)`,
+  запускающий фоновый `std::thread` с циклом `sleep(5s) → собрать сигналы →
+  decide() → activity_events::insert()`. Поток **не завязан на окна** (ТЗ,
+  раздел 7) — переживает закрытие/скрытие любого окна, завершается только
+  вместе с процессом.
+
+**Suspend/resume определяется косвенно** — через сравнение фактического
+интервала между двумя poll с ожидаемым (`SUSPEND_GAP_MULTIPLIER = 3`), а не
+через нативный `PowerRegisterSuspendResumeNotification`-callback. Осознанное
+упрощение Итерации 2 — см. ADR-0007 для деталей и условий пересмотра.
+
 ## Что сознательно НЕ сделано в Итерации 0
 
 - **Нет SQLite** — будет `rusqlite` (ADR готовится к Итерации 1, по

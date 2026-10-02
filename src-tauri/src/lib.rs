@@ -8,13 +8,14 @@ mod commands;
 mod db;
 #[allow(dead_code)]
 mod domain;
+mod platform;
+mod tracking;
 mod tray;
 mod windows;
 
-use std::sync::Mutex;
 use tauri::{Manager, WindowEvent};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
-use tray::{create_tray, TrackerPauseStub};
+use tray::create_tray;
 use windows::main_window::{show_main_window, MAIN_LABEL};
 use windows::overlay_window::{ensure_overlay_window, toggle_overlay, OVERLAY_LABEL};
 
@@ -37,7 +38,6 @@ pub fn run() {
                 })
                 .build(),
         )
-        .manage(TrackerPauseStub(Mutex::new(false)))
         .invoke_handler(tauri::generate_handler![commands::app_info::get_app_info])
         .setup(|app| {
             let handle = app.handle();
@@ -48,6 +48,12 @@ pub fn run() {
             // выполняются через один сервис").
             let database = db::app_database::init(handle)?;
             app.manage(database);
+
+            // Activity Tracker (Итерация 2): фоновый поток опроса, не
+            // зависит от жизненного цикла окон (ТЗ, раздел 7). Хендл кладём
+            // в managed state — трей дёргает pause/resume через него.
+            let tracker_handle = tracking::tracker::start(handle);
+            app.manage(tracker_handle);
 
             // Overlay создаём скрытым сразу при старте — повторное открытие
             // не пересоздаёт окно (ТЗ FR-06.4: p95 ~500мс на открытие).

@@ -739,6 +739,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tempfile",
  "uuid",
+ "windows",
 ]
 
 [[package]]
