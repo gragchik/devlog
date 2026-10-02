@@ -17,8 +17,14 @@ use crate::domain::tracking_status::TrackingStatus;
 use crate::platform::windows_activity_adapter::{get_foreground_process_name, get_system_idle_seconds, is_session_locked};
 use crate::tracking::engine::{decide, PollSignals};
 use crate::tracking::git_context::GitContextResult;
+use crate::tracking::session_engine;
 use crate::tracking::whitelist::load_whitelist;
 use crate::tracking::{git_adapter, git_context};
+
+/// Session Engine перестраивает сессии не на каждый poll (дорого и не
+/// нужно — события копятся быстрее, чем пользователю нужна свежая
+/// картина), а раз в столько опросов (~30 секунд при 5-секундном интервале).
+const SESSION_ENGINE_RUN_EVERY_N_POLLS: u64 = 6;
 
 /// Целевой интервал опроса (ТЗ FR-02.1: "каждые 5 секунд, конфигурируемо").
 /// Настройка через Settings — Итерация 5; константа — временное решение,
@@ -127,6 +133,7 @@ pub fn start(app: &AppHandle) -> ActivityTrackerHandle {
         };
 
         let mut last_poll_at = now_utc_seconds();
+        let mut poll_count: u64 = 0;
         loop {
             thread::sleep(Duration::from_secs(POLL_INTERVAL_SECONDS));
 
@@ -151,7 +158,7 @@ pub fn start(app: &AppHandle) -> ActivityTrackerHandle {
             let decided = decide(&signals, &whitelist);
 
             let db = app_handle.state::<AppDatabase>();
-            let conn = db.0.lock().expect("AppDatabase mutex poisoned");
+            let mut conn = db.0.lock().expect("AppDatabase mutex poisoned");
 
             // Git-контекст имеет смысл резолвить только когда пользователь
             // реально работает (TRACKING) — во всех остальных состояниях
@@ -185,6 +192,16 @@ pub fn start(app: &AppHandle) -> ActivityTrackerHandle {
             };
             if let Err(err) = activity_events::insert(&conn, &input) {
                 eprintln!("[tracker] failed to insert activity_event: {err}");
+            }
+
+            poll_count += 1;
+            if poll_count % SESSION_ENGINE_RUN_EVERY_N_POLLS == 0 {
+                let (day_start, day_end) = session_engine::today_local_range_utc();
+                if let Err(err) =
+                    session_engine::rebuild_detected_sessions_in_range(&mut conn, day_start, day_end, POLL_INTERVAL_SECONDS as i64)
+                {
+                    eprintln!("[tracker] session engine rebuild failed: {err}");
+                }
             }
         }
     });

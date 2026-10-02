@@ -111,6 +111,18 @@ pub fn list_by_range(
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+/// Полное удаление строки (не soft-delete) — **только** для Session
+/// Engine при регенерации нетронутых (`source == Detected`,
+/// `!is_manually_edited`) сессий (Итерация 4). У такой сессии по
+/// построению нет записей в `session_edits` (первая же правка выставляет
+/// `is_manually_edited = true`), так что терять нечего. Никогда не
+/// использовать на сессии, у которой может быть история правок или
+/// пользовательский смысл — для них `soft_delete`.
+pub fn hard_delete(conn: &Connection, id: &str) -> RepoResult<()> {
+    conn.execute("DELETE FROM work_sessions WHERE id = ?1", params![id])?;
+    Ok(())
+}
+
 fn write_session_row(conn: &Connection, s: &WorkSession) -> rusqlite::Result<()> {
     conn.execute(
         "UPDATE work_sessions SET
