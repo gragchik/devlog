@@ -39,6 +39,8 @@ mod tests {
             vec![
                 "_migrations".to_string(),
                 "activity_events".to_string(),
+                "issues_cache".to_string(),
+                "jira_submissions".to_string(),
                 "projects".to_string(),
                 "session_edits".to_string(),
                 "settings".to_string(),
@@ -68,7 +70,7 @@ mod tests {
         // "Перезапуск" — новое соединение на том же файле, как после рестарта приложения.
         let conn2 = create_database(&path).unwrap();
         let applied: i64 = conn2.query_row("SELECT COUNT(*) FROM _migrations", [], |row| row.get(0)).unwrap();
-        assert_eq!(applied, 1); // миграция не применилась повторно
+        assert_eq!(applied, crate::db::migrations::all().len() as i64); // миграции не применились повторно
 
         let reloaded = projects::get_by_id(&conn2, &created.id).unwrap();
         assert_eq!(reloaded, Some(created));

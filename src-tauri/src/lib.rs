@@ -1,6 +1,7 @@
 mod commands;
 mod db;
 mod domain;
+mod integrations;
 mod platform;
 mod shortcuts;
 mod tracking;

@@ -29,6 +29,10 @@ regex = "1.13.1"
 chrono = "0.4.45"
 iana-time-zone = "0.1.65"
 tauri-plugin-autostart = "2.5.1"
+reqwest = { version = "0.13.5", features = ["json", "query"] }
+async-trait = "0.1.92"
+keyring = { version = "3.6.3", features = ["windows-native"] }
+sha2 = "0.11.0"
 
 [[bin]]
 name = "devlog"
@@ -36,3 +40,5 @@ path = "src/main.rs"
 
 [dev-dependencies]
 tempfile = "3.27.0"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
+wiremock = "0.6.5"

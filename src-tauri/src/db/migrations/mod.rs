@@ -1,4 +1,5 @@
 mod m0001_initial_schema;
+mod m0002_jira_tables;
 
 use rusqlite::{Connection, Result};
 
@@ -10,11 +11,10 @@ pub struct Migration {
 
 /// Порядок — по возрастанию `version`. Применяются по порядку, без пропусков.
 pub fn all() -> Vec<Migration> {
-    vec![Migration {
-        version: 1,
-        name: "initial_schema",
-        up: m0001_initial_schema::up,
-    }]
+    vec![
+        Migration { version: 1, name: "initial_schema", up: m0001_initial_schema::up },
+        Migration { version: 2, name: "jira_tables", up: m0002_jira_tables::up },
+    ]
 }
 
 /// Применяет все ещё не применённые миграции, по порядку, каждую в своей

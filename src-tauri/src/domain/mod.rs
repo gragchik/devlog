@@ -4,15 +4,18 @@
 
 pub mod activity_event;
 pub mod confidence;
+
+// Итерация 7 (Jira Integration) в процессе — типы готовы и протестированы
+// (`domain::jira`, `integrations::jira`), но ещё не подключены ни к одной
+// IPC-команде (`commands/jira.rs` — следующий шаг). Без `#[allow(dead_code)]`
+// компилятор шумит на весь модуль, хотя сам код и его unit-тесты рабочие.
+#[allow(dead_code)]
+pub mod jira;
 pub mod project;
 pub mod session_edit;
 pub mod tracking_status;
 pub mod work_session;
 
-// Worklog Review в Итерации 5 — только read-only агрегация по issueKey,
-// без персистентных черновиков (полноценный жизненный цикл черновика имеет
-// смысл вместе с реальной отправкой в Jira — Итерация 7/8). Тип и
-// репозиторий готовы заранее (схема уже есть с Итерации 1), но пока не
-// используются.
+// См. комментарий у `domain::jira` — то же самое для черновиков.
 #[allow(dead_code)]
 pub mod worklog_draft;
