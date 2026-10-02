@@ -67,6 +67,9 @@ pub fn insert(conn: &Connection, input: &CreateActivityEventInput) -> Result<Act
 }
 
 /// Для сидирования фикстур в тестах — одна транзакция на весь набор.
+/// Пока используется только тестами (ни одна IPC-команда не делает
+/// массовый импорт событий) — оставлено как готовый инструмент.
+#[allow(dead_code)]
 pub fn insert_many(conn: &mut Connection, inputs: &[CreateActivityEventInput]) -> Result<Vec<ActivityEvent>> {
     let tx = conn.transaction()?;
     let mut result = Vec::with_capacity(inputs.len());

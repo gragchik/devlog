@@ -11,6 +11,10 @@ pub enum RepoError {
     /// рубеж защиты — см. миграцию 0001), а ошибка уровня приложения с
     /// понятным сообщением до похода в БД.
     InvalidInterval { started_at_utc: i64, ended_at_utc: i64 },
+    /// `split()` требует точку строго внутри `[started_at_utc,
+    /// ended_at_utc)` и наличия `ended_at_utc` (нельзя разбить открытую
+    /// сессию — непонятно, где заканчивается вторая половина).
+    InvalidSplitPoint { reason: String },
     NotFound(String),
 }
 
@@ -22,6 +26,7 @@ impl fmt::Display for RepoError {
                 f,
                 "session interval invalid: endedAtUtc ({ended_at_utc}) must be > startedAtUtc ({started_at_utc})"
             ),
+            RepoError::InvalidSplitPoint { reason } => write!(f, "invalid split point: {reason}"),
             RepoError::NotFound(what) => write!(f, "not found: {what}"),
         }
     }

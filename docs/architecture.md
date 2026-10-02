@@ -262,6 +262,54 @@ project/issueKey/excluded корректна и совпадает с данны
 pin (ручное закрепление задачи) — ждут overlay UI, Итерация 6; UI для
 просмотра/правки сессий вообще — Итерация 5 (Dashboard/Timeline).
 
+## Главное окно: Dashboard/Timeline/Settings (Итерация 5)
+
+**IPC-команды** (`src-tauri/src/commands/`) — первые команды поверх слоя
+данных Итераций 1/4: `sessions.rs` (`get_sessions_for_day`,
+`update_session`, `split_session`, `merge_sessions`, `exclude_session`,
+`restore_session`, `undo_session_edit`, `create_manual_session`),
+`projects.rs` (CRUD репозиториев), `settings.rs` (whitelist, пороги
+трекера, автозапуск через `tauri-plugin-autostart`), `tracking.rs`
+(get/set паузы). Все команды-мутаторы эмитят `sessions:changed`
+(`AppHandle::emit`) — frontend подписывается через `listen()`
+(`@tauri-apps/api/event`) вместо поллинга; трекер сам эмитит
+`tracking:changed`/`sessions:changed` после каждого poll/регенерации (ТЗ,
+раздел 6).
+
+**`UpdateWorkSessionPatch` стал `Deserialize`** (было намеренно отложено в
+Итерации 1) через стандартный serde-паттерн "double option"
+(`deserialize_with = "double_option"`), различающий "поле отсутствует"
+(не трогать) от "поле `null`" (обнулить) — без этого PATCH-семантика по
+JSON невозможна в принципе.
+
+**Новые доменные операции** в `work_sessions.rs`: `split()` (разбивает по
+времени, первая половина сохраняет id; **известное ограничение** — undo
+восстанавливает только первую половину, вторую приходится удалять
+вручную, см. doc-комментарий) и `merge()` (объединяет, поглощённая сессия
+soft-delete, не исчезает физически).
+
+**Frontend** (`src/main-window/`): `App.tsx` с вкладками Dashboard/
+Timeline/Settings (без react-router — состояние в `useState`, оправдано
+размером приложения); `hooks/useDaySessions.ts` — общий хук загрузки +
+live-обновления по событию; `api.ts` — типизированная обёртка над
+`invoke()`. Timeline — список (не графические блоки) с цветовой
+индикацией статуса по левой границе — функционально покрывает FR-05.2,
+визуальный таймлайн-виджет можно добавить позже как полировку.
+
+**Найденный и исправленный баг (через реальные скриншоты и клики, не
+unit-тестами):** `soft_delete` не ставил `is_manually_edited = true`, из-за
+чего Session Engine не считал исключённую сессию "занятой" и создавал
+новую detected-сессию на том же месте при следующем цикле регенерации —
+кнопка "Исключить" была недолговечной. Исправлено: `soft_delete`/`restore`
+теперь помечают `is_manually_edited = true`; `rebuild_detected_sessions_in_range`
+теперь запрашивает существующие сессии с `include_deleted: true` для
+расчёта protected-диапазонов (раньше удалённые сессии были невидимы и для
+этой проверки тоже). Закреплено и unit-тестом
+(`soft_delete_and_restore_mark_session_as_manually_edited`), и
+интеграционным тестом полного цикла
+(`excluded_session_is_not_resurrected_by_next_regeneration`). Подробности
+и скриншоты до/после — `docs/iterations/05.md`.
+
 ## Что сознательно НЕ сделано в Итерации 0
 
 - **Нет SQLite** — будет `rusqlite` (ADR готовится к Итерации 1, по

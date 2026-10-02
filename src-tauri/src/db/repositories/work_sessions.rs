@@ -215,6 +215,14 @@ fn set_deleted_at(
     let previous = get_by_id(&tx, id)?.ok_or_else(|| RepoError::NotFound(format!("WorkSession {id}")))?;
     let mut next = previous.clone();
     next.deleted_at = deleted_at;
+    // Критично: и исключение, и восстановление — осознанные решения
+    // пользователя, как и любая другая правка. Без этого Session Engine
+    // (который защищает от регенерации только `is_manually_edited`
+    // сессии) не видел бы soft-deleted сессию как "занятую" и создавал
+    // новую detected-сессию на том же месте при следующем цикле — ровно
+    // такой баг был найден и исправлен при ручной проверке Итерации 5
+    // (кнопка "Исключить" не была durable) — см. docs/iterations/05.md.
+    next.is_manually_edited = true;
     next.updated_at_utc = now_utc_seconds();
 
     write_session_row(&tx, &next)?;
@@ -262,6 +270,131 @@ pub fn undo_last_edit(conn: &mut Connection, session_id: &str) -> RepoResult<Opt
 
     tx.commit()?;
     Ok(Some(restored))
+}
+
+/// Разбивает сессию на две по моменту `at_utc` (FR-05.4 "разбить").
+/// `at_utc` должен быть строго внутри `[started_at_utc, ended_at_utc)` —
+/// нельзя разбить открытую (`ended_at_utc == None`) сессию, непонятно, где
+/// должна закончиться вторая половина. `active_seconds`/
+/// `manual_seconds_override` обеих половин пересчитываются пропорционально
+/// по времени (любой прежний `manual_seconds_override` теряет смысл после
+/// разбиения — явный выбор в пользу простоты, не пытаемся угадать, как его
+/// поделить).
+///
+/// **Известное ограничение undo:** в журнал пишется только правка первой
+/// половины (сжатие исходной сессии); создание второй половины — отдельная
+/// строка без своей записи в `session_edits`. `undo_last_edit` на первой
+/// половине вернёт её к исходному полному диапазону, но **не удалит**
+/// вторую половину автоматически — получится видимое пересечение времени,
+/// которое придётся убрать вручную (удалить вторую половину). Корректный
+/// multi-row undo — отложен как более сложная задача не этой итерации.
+pub fn split(conn: &mut Connection, id: &str, at_utc: i64) -> RepoResult<(WorkSession, WorkSession)> {
+    let tx = conn.transaction()?;
+
+    let original = get_by_id(&tx, id)?.ok_or_else(|| RepoError::NotFound(format!("WorkSession {id}")))?;
+    let Some(end) = original.ended_at_utc else {
+        return Err(RepoError::InvalidSplitPoint { reason: "cannot split a session with no end".to_string() });
+    };
+    if at_utc <= original.started_at_utc || at_utc >= end {
+        return Err(RepoError::InvalidSplitPoint {
+            reason: format!("split point {at_utc} must be strictly inside [{}, {end})", original.started_at_utc),
+        });
+    }
+
+    let mut first_half = original.clone();
+    first_half.ended_at_utc = Some(at_utc);
+    first_half.active_seconds = at_utc - original.started_at_utc;
+    first_half.manual_seconds_override = None;
+    first_half.is_manually_edited = true;
+    first_half.updated_at_utc = now_utc_seconds();
+    write_session_row(&tx, &first_half)?;
+    session_edits::append(
+        &tx,
+        &CreateSessionEditInput {
+            session_id: id.to_string(),
+            operation: crate::domain::work_session::SessionEditOperation::Split,
+            previous_state: original.clone(),
+            next_state: first_half.clone(),
+        },
+    )?;
+
+    let second_half = create(
+        &tx,
+        &CreateWorkSessionInput {
+            started_at_utc: at_utc,
+            ended_at_utc: Some(end),
+            timezone_id: original.timezone_id.clone(),
+            active_seconds: end - at_utc,
+            source: original.source,
+            project_id: original.project_id.clone(),
+            issue_key: original.issue_key.clone(),
+            manual_seconds_override: None,
+            description: original.description.clone(),
+            confidence: Some(original.confidence),
+            review_status: Some(original.review_status),
+            is_manually_edited: Some(true),
+        },
+    )?;
+
+    tx.commit()?;
+    Ok((first_half, second_half))
+}
+
+/// Объединяет две сессии в одну (FR-05.4 "объединить"). Не требует, чтобы
+/// сессии были строго смежными без зазора — зазор просто "поглощается"
+/// объединённым диапазоном (ТЗ уже допускает, что `activeSeconds` может
+/// быть меньше, чем `endedAtUtc - startedAtUtc`, когда внутри был перерыв).
+/// Если project/issueKey у половин различаются — побеждает та, что
+/// начинается раньше (простое, предсказуемое правило; выбор "какую из
+/// двух задач оставить" пользователем в UI — не в этой итерации).
+/// Поглощённая сессия не удаляется физически — `soft_delete`, чтобы не
+/// потерять её собственную историю правок, если она была отредактирована.
+pub fn merge(conn: &mut Connection, first_id: &str, second_id: &str) -> RepoResult<WorkSession> {
+    let tx = conn.transaction()?;
+
+    let a = get_by_id(&tx, first_id)?.ok_or_else(|| RepoError::NotFound(format!("WorkSession {first_id}")))?;
+    let b = get_by_id(&tx, second_id)?.ok_or_else(|| RepoError::NotFound(format!("WorkSession {second_id}")))?;
+    let (earlier, later) = if a.started_at_utc <= b.started_at_utc { (a, b) } else { (b, a) };
+
+    let previous = earlier.clone();
+    let mut merged = earlier;
+    merged.ended_at_utc = match (merged.ended_at_utc, later.ended_at_utc) {
+        (Some(e1), Some(e2)) => Some(e1.max(e2)),
+        _ => None, // если у любой половины сессия ещё открыта — результат тоже открыт
+    };
+    merged.active_seconds += later.active_seconds;
+    merged.is_manually_edited = true;
+    merged.updated_at_utc = now_utc_seconds();
+    write_session_row(&tx, &merged)?;
+    session_edits::append(
+        &tx,
+        &CreateSessionEditInput {
+            session_id: merged.id.clone(),
+            operation: crate::domain::work_session::SessionEditOperation::Merge,
+            previous_state: previous,
+            next_state: merged.clone(),
+        },
+    )?;
+
+    let later_id = later.id.clone();
+    let later_now = now_utc_seconds();
+    let mut later_deleted = later;
+    later_deleted.deleted_at = Some(later_now);
+    later_deleted.updated_at_utc = later_now;
+    let later_previous = get_by_id(&tx, &later_id)?.expect("just read above");
+    write_session_row(&tx, &later_deleted)?;
+    session_edits::append(
+        &tx,
+        &CreateSessionEditInput {
+            session_id: later_id,
+            operation: crate::domain::work_session::SessionEditOperation::Delete,
+            previous_state: later_previous,
+            next_state: later_deleted,
+        },
+    )?;
+
+    tx.commit()?;
+    Ok(merged)
 }
 
 #[cfg(test)]
@@ -390,6 +523,24 @@ mod tests {
         );
     }
 
+    /// Регрессия (найдена при ручной проверке Итерации 5 со скриншотами):
+    /// `soft_delete` обязан пометить сессию как `is_manually_edited`, иначе
+    /// Session Engine не видит её как "занятую" время и создаёт новую
+    /// detected-сессию на том же месте — кнопка "Исключить" была бы
+    /// недолговечной.
+    #[test]
+    fn soft_delete_and_restore_mark_session_as_manually_edited() {
+        let (mut conn, _dir) = temp_database();
+        let session = create(&conn, &minimal_input(DAY_START, Some(DAY_START + 3600))).unwrap();
+        assert!(!session.is_manually_edited);
+
+        let deleted = soft_delete(&mut conn, &session.id).unwrap();
+        assert!(deleted.is_manually_edited);
+
+        let restored = restore(&mut conn, &session.id).unwrap();
+        assert!(restored.is_manually_edited);
+    }
+
     #[test]
     fn undo_last_edit_reverts_without_deleting_journal_entry() {
         let (mut conn, _dir) = temp_database();
@@ -475,5 +626,75 @@ mod tests {
         let mut descriptions: Vec<_> = log.iter().map(|e| e.next_state.description.clone()).collect();
         descriptions.sort();
         assert_eq!(descriptions, vec![Some("правка A".to_string()), Some("правка B".to_string())]);
+    }
+
+    #[test]
+    fn split_produces_two_adjacent_sessions_with_proportional_active_seconds() {
+        let (mut conn, _dir) = temp_database();
+        let mut input = minimal_input(DAY_START, Some(DAY_START + 3600));
+        input.issue_key = Some("OB-448".into());
+        let session = create(&conn, &input).unwrap();
+
+        let (first, second) = split(&mut conn, &session.id, DAY_START + 1000).unwrap();
+
+        assert_eq!(first.id, session.id); // первая половина сохраняет исходный id
+        assert_eq!(first.ended_at_utc, Some(DAY_START + 1000));
+        assert_eq!(first.active_seconds, 1000);
+        assert!(first.is_manually_edited);
+
+        assert_ne!(second.id, session.id);
+        assert_eq!(second.started_at_utc, DAY_START + 1000);
+        assert_eq!(second.ended_at_utc, Some(DAY_START + 3600));
+        assert_eq!(second.active_seconds, 2600);
+        assert_eq!(second.issue_key.as_deref(), Some("OB-448"));
+        assert!(second.is_manually_edited);
+    }
+
+    #[test]
+    fn split_rejects_point_outside_session_bounds() {
+        let (mut conn, _dir) = temp_database();
+        let session = create(&conn, &minimal_input(DAY_START, Some(DAY_START + 100))).unwrap();
+        assert!(matches!(split(&mut conn, &session.id, DAY_START).unwrap_err(), RepoError::InvalidSplitPoint { .. }));
+        assert!(matches!(split(&mut conn, &session.id, DAY_START + 100).unwrap_err(), RepoError::InvalidSplitPoint { .. }));
+        assert!(matches!(split(&mut conn, &session.id, DAY_START + 500).unwrap_err(), RepoError::InvalidSplitPoint { .. }));
+    }
+
+    #[test]
+    fn split_rejects_open_ended_session() {
+        let (mut conn, _dir) = temp_database();
+        let session = create(&conn, &minimal_input(DAY_START, None)).unwrap();
+        assert!(matches!(split(&mut conn, &session.id, DAY_START + 10).unwrap_err(), RepoError::InvalidSplitPoint { .. }));
+    }
+
+    #[test]
+    fn merge_combines_two_sessions_keeping_the_earlier_id() {
+        let (mut conn, _dir) = temp_database();
+        let mut input_a = minimal_input(DAY_START, Some(DAY_START + 100));
+        input_a.issue_key = Some("OB-448".into());
+        let a = create(&conn, &input_a).unwrap();
+        let b = create(&conn, &minimal_input(DAY_START + 200, Some(DAY_START + 300))).unwrap();
+
+        let merged = merge(&mut conn, &a.id, &b.id).unwrap();
+
+        assert_eq!(merged.id, a.id);
+        assert_eq!(merged.started_at_utc, DAY_START);
+        assert_eq!(merged.ended_at_utc, Some(DAY_START + 300));
+        assert_eq!(merged.active_seconds, 200); // 100 + 100, разрыв не засчитан
+        assert_eq!(merged.issue_key.as_deref(), Some("OB-448")); // от earlier
+
+        // Поглощённая сессия мягко удалена, не исчезла физически.
+        assert!(get_by_id(&conn, &b.id).unwrap().unwrap().deleted_at.is_some());
+    }
+
+    #[test]
+    fn merge_works_regardless_of_argument_order() {
+        let (mut conn, _dir) = temp_database();
+        let a = create(&conn, &minimal_input(DAY_START, Some(DAY_START + 100))).unwrap();
+        let b = create(&conn, &minimal_input(DAY_START + 200, Some(DAY_START + 300))).unwrap();
+
+        // Передаём в обратном порядке (b, a) — результат должен быть тем же.
+        let merged = merge(&mut conn, &b.id, &a.id).unwrap();
+        assert_eq!(merged.id, a.id);
+        assert_eq!(merged.ended_at_utc, Some(DAY_START + 300));
     }
 }

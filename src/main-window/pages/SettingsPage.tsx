@@ -1,0 +1,235 @@
+import { useEffect, useState } from 'react'
+import type { Project } from '@shared/types/project'
+import type { TrackerThresholds, WhitelistEntry } from '@shared/types/settings'
+import { api, errorMessage } from '../api'
+
+function ProjectsSection(): JSX.Element {
+  const [projects, setProjects] = useState<Project[]>([])
+  const [name, setName] = useState('')
+  const [repoPath, setRepoPath] = useState('')
+  const [error, setError] = useState<string | null>(null)
+
+  function reload(): void {
+    api.listProjects().then(setProjects).catch((err: unknown) => setError(errorMessage(err)))
+  }
+
+  useEffect(reload, [])
+
+  async function add(): Promise<void> {
+    if (!name.trim() || !repoPath.trim()) return
+    try {
+      await api.addProject({ name: name.trim(), repoPath: repoPath.trim() })
+      setName('')
+      setRepoPath('')
+      setError(null)
+      reload()
+    } catch (err) {
+      setError(errorMessage(err))
+    }
+  }
+
+  async function toggleEnabled(project: Project): Promise<void> {
+    await api.updateProject(project.id, { enabled: !project.enabled })
+    reload()
+  }
+
+  async function remove(project: Project): Promise<void> {
+    await api.removeProject(project.id)
+    reload()
+  }
+
+  return (
+    <section className="card">
+      <h2>Репозитории</h2>
+      <p className="muted">
+        Локальные папки Git-репозиториев, которые трекер проверяет на текущую ветку (FR-03). Issue key извлекается из
+        имени ветки по умолчанию по паттерну <code>{'\\b[A-Z][A-Z0-9]+-\\d+\\b'}</code>.
+      </p>
+      {error && <p className="error">{error}</p>}
+      <ul className="settings-list">
+        {projects.map((p) => (
+          <li key={p.id}>
+            <label>
+              <input type="checkbox" checked={p.enabled} onChange={() => void toggleEnabled(p)} /> {p.name}
+            </label>
+            <span className="muted">{p.repoPath}</span>
+            <button type="button" onClick={() => void remove(p)}>
+              Удалить
+            </button>
+          </li>
+        ))}
+      </ul>
+      <div className="settings-add-row">
+        <input placeholder="Название" value={name} onChange={(e) => setName(e.target.value)} />
+        <input placeholder="D:/путь/к/репозиторию" value={repoPath} onChange={(e) => setRepoPath(e.target.value)} />
+        <button type="button" onClick={add}>
+          Добавить
+        </button>
+      </div>
+    </section>
+  )
+}
+
+function WhitelistSection(): JSX.Element {
+  const [entries, setEntries] = useState<WhitelistEntry[]>([])
+  const [processName, setProcessName] = useState('')
+  const [category, setCategory] = useState('ide')
+  const [error, setError] = useState<string | null>(null)
+  const [saved, setSaved] = useState(false)
+
+  function reload(): void {
+    api.getWhitelist().then(setEntries).catch((err: unknown) => setError(errorMessage(err)))
+  }
+
+  useEffect(reload, [])
+
+  async function persist(next: WhitelistEntry[]): Promise<void> {
+    try {
+      await api.setWhitelist(next)
+      setEntries(next)
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+    } catch (err) {
+      setError(errorMessage(err))
+    }
+  }
+
+  function add(): void {
+    if (!processName.trim()) return
+    void persist([...entries, { processName: processName.trim(), category }])
+    setProcessName('')
+  }
+
+  function remove(index: number): void {
+    void persist(entries.filter((_, i) => i !== index))
+  }
+
+  return (
+    <section className="card">
+      <h2>Учитываемые приложения</h2>
+      <p className="muted">
+        FR-02.3: только процессы из этого списка считаются рабочим временем. Остальные попадают в «Исключено».
+        Изменения вступят в силу <strong>после перезапуска приложения</strong> (трекер читает список один раз при
+        старте).
+      </p>
+      {error && <p className="error">{error}</p>}
+      {saved && <p className="muted">Сохранено.</p>}
+      <ul className="settings-list">
+        {entries.map((e, i) => (
+          <li key={`${e.processName}-${i}`}>
+            <code>{e.processName}</code>
+            <span className="muted">{e.category}</span>
+            <button type="button" onClick={() => remove(i)}>
+              Удалить
+            </button>
+          </li>
+        ))}
+      </ul>
+      <div className="settings-add-row">
+        <input placeholder="webstorm64.exe" value={processName} onChange={(e) => setProcessName(e.target.value)} />
+        <input placeholder="категория (ide/terminal/…)" value={category} onChange={(e) => setCategory(e.target.value)} />
+        <button type="button" onClick={add}>
+          Добавить
+        </button>
+      </div>
+    </section>
+  )
+}
+
+function ThresholdsSection(): JSX.Element {
+  const [thresholds, setThresholds] = useState<TrackerThresholds | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [saved, setSaved] = useState(false)
+
+  useEffect(() => {
+    api.getTrackerThresholds().then(setThresholds).catch((err: unknown) => setError(errorMessage(err)))
+  }, [])
+
+  async function save(): Promise<void> {
+    if (!thresholds) return
+    try {
+      await api.setTrackerThresholds(thresholds)
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+    } catch (err) {
+      setError(errorMessage(err))
+    }
+  }
+
+  return (
+    <section className="card">
+      <h2>Пороги трекера</h2>
+      {error && <p className="error">{error}</p>}
+      {saved && <p className="muted">Сохранено.</p>}
+      {thresholds && (
+        <div className="settings-add-row">
+          <label>
+            Idle-порог (сек)
+            <input
+              type="number"
+              min={1}
+              value={thresholds.idleThresholdSeconds}
+              onChange={(e) => setThresholds({ ...thresholds, idleThresholdSeconds: Number(e.target.value) })}
+            />
+          </label>
+          <label>
+            Интервал опроса (сек)
+            <input
+              type="number"
+              min={1}
+              value={thresholds.pollIntervalSeconds}
+              onChange={(e) => setThresholds({ ...thresholds, pollIntervalSeconds: Number(e.target.value) })}
+            />
+          </label>
+          <button type="button" onClick={save}>
+            Сохранить
+          </button>
+        </div>
+      )}
+      <p className="muted">Требуется перезапуск приложения, чтобы вступить в силу.</p>
+    </section>
+  )
+}
+
+function AutostartSection(): JSX.Element {
+  const [enabled, setEnabled] = useState<boolean | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    api.getAutostartEnabled().then(setEnabled).catch((err: unknown) => setError(errorMessage(err)))
+  }, [])
+
+  async function toggle(): Promise<void> {
+    if (enabled === null) return
+    try {
+      await api.setAutostartEnabled(!enabled)
+      setEnabled(!enabled)
+    } catch (err) {
+      setError(errorMessage(err))
+    }
+  }
+
+  return (
+    <section className="card">
+      <h2>Автозапуск</h2>
+      <p className="muted">FR-01.3: запуск вместе с Windows — выключен по умолчанию.</p>
+      {error && <p className="error">{error}</p>}
+      <label>
+        <input type="checkbox" checked={enabled ?? false} disabled={enabled === null} onChange={toggle} /> Запускать
+        DevLog при входе в Windows
+      </label>
+    </section>
+  )
+}
+
+export function SettingsPage(): JSX.Element {
+  return (
+    <div className="page">
+      <h1>Settings</h1>
+      <ProjectsSection />
+      <WhitelistSection />
+      <ThresholdsSection />
+      <AutostartSection />
+    </div>
+  )
+}

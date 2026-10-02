@@ -155,21 +155,71 @@ pub struct CreateWorkSessionInput {
     pub is_manually_edited: Option<bool>,
 }
 
-/// Патч для `WorkSessionsRepository::update`. Поля-`Option<Option<T>>`
-/// различают "не трогать" (`None`) от "явно обнулить" (`Some(None)`) —
-/// намеренно **не** `#[derive(Deserialize)]`: serde по умолчанию не
-/// различает "поле отсутствует" и "поле равно `null`" без отдельного
-/// `deserialize_with`-хака. Когда это понадобится для реальной IPC-команды
-/// (Итерация 5+), добавить его туда же, а не раньше.
-#[derive(Debug, Clone, Default)]
+/// Разбирает JSON-поле как "отсутствует" (`None`, не вызывается вовсе —
+/// см. `#[serde(default)]` на каждом поле) / "явно `null`" (`Some(None)`) /
+/// "есть значение" (`Some(Some(v))`) — стандартный приём для PATCH-семантики
+/// в serde, т.к. по умолчанию отсутствие поля и `null` неразличимы.
+fn double_option<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Option::deserialize(deserializer).map(Some)
+}
+
+/// Патч для `work_sessions::update`. Поля-`Option<Option<T>>` различают
+/// "не трогать" (`None`, поле отсутствует в JSON) от "явно обнулить"
+/// (`Some(None)`, поле прислано как `null`) — см. `double_option`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UpdateWorkSessionPatch {
+    #[serde(default)]
     pub started_at_utc: Option<i64>,
+    #[serde(default, deserialize_with = "double_option")]
     pub ended_at_utc: Option<Option<i64>>,
+    #[serde(default, deserialize_with = "double_option")]
     pub project_id: Option<Option<String>>,
+    #[serde(default, deserialize_with = "double_option")]
     pub issue_key: Option<Option<String>>,
+    #[serde(default)]
     pub active_seconds: Option<i64>,
+    #[serde(default, deserialize_with = "double_option")]
     pub manual_seconds_override: Option<Option<i64>>,
+    #[serde(default, deserialize_with = "double_option")]
     pub description: Option<Option<String>>,
+    #[serde(default)]
     pub confidence: Option<Confidence>,
+    #[serde(default)]
     pub review_status: Option<WorkSessionReviewStatus>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn absent_field_means_do_not_touch() {
+        let patch: UpdateWorkSessionPatch = serde_json::from_str("{}").unwrap();
+        assert_eq!(patch.description, None);
+        assert_eq!(patch.issue_key, None);
+    }
+
+    #[test]
+    fn explicit_null_means_clear_the_field() {
+        let patch: UpdateWorkSessionPatch = serde_json::from_str(r#"{"description": null}"#).unwrap();
+        assert_eq!(patch.description, Some(None));
+    }
+
+    #[test]
+    fn explicit_value_is_set() {
+        let patch: UpdateWorkSessionPatch = serde_json::from_str(r#"{"issueKey": "OB-448"}"#).unwrap();
+        assert_eq!(patch.issue_key, Some(Some("OB-448".to_string())));
+    }
+
+    #[test]
+    fn plain_option_fields_still_work_normally() {
+        let patch: UpdateWorkSessionPatch = serde_json::from_str(r#"{"activeSeconds": 120}"#).unwrap();
+        assert_eq!(patch.active_seconds, Some(120));
+        assert_eq!(patch.description, None); // не упомянуто — не трогать
+    }
 }

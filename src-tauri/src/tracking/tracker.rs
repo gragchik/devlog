@@ -5,11 +5,11 @@ use std::thread;
 use std::time::{Duration, SystemTime};
 
 use rusqlite::Connection;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::db::app_database::AppDatabase;
 use crate::db::ids::now_utc_seconds;
-use crate::db::repositories::{activity_events, projects as projects_repo};
+use crate::db::repositories::{activity_events, projects as projects_repo, settings};
 use crate::domain::activity_event::CreateActivityEventInput;
 use crate::domain::confidence::Confidence;
 use crate::domain::project::Project;
@@ -27,12 +27,27 @@ use crate::tracking::{git_adapter, git_context};
 const SESSION_ENGINE_RUN_EVERY_N_POLLS: u64 = 6;
 
 /// Целевой интервал опроса (ТЗ FR-02.1: "каждые 5 секунд, конфигурируемо").
-/// Настройка через Settings — Итерация 5; константа — временное решение,
-/// не перечитывается во время работы.
-pub const POLL_INTERVAL_SECONDS: u64 = 5;
+/// Дефолт, если в `settings` ничего не задано — см. `SETTINGS_KEY_POLL_INTERVAL`.
+pub const DEFAULT_POLL_INTERVAL_SECONDS: u64 = 5;
 
-/// ТЗ FR-02.5: "idle дольше 180 секунд" закрывает сессию.
-pub const IDLE_THRESHOLD_SECONDS: u64 = 180;
+/// ТЗ FR-02.5: "idle дольше 180 секунд" закрывает сессию. Дефолт — см.
+/// `SETTINGS_KEY_IDLE_THRESHOLD`.
+pub const DEFAULT_IDLE_THRESHOLD_SECONDS: u64 = 180;
+
+/// Ключи в таблице `settings` (Итерация 5, Settings UI). Читаются один раз
+/// при старте потока трекера — изменение требует перезапуска приложения
+/// (не усложняем живой reload до реальной необходимости).
+pub const SETTINGS_KEY_IDLE_THRESHOLD: &str = "activityTracker.idleThresholdSeconds";
+pub const SETTINGS_KEY_POLL_INTERVAL: &str = "activityTracker.pollIntervalSeconds";
+
+fn read_u64_setting(conn: &Connection, key: &str, default: u64) -> u64 {
+    settings::get(conn, key)
+        .ok()
+        .flatten()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(default)
+}
 
 /// Управляющий хендл трекера — кладётся в Tauri managed state, доступен
 /// и трею (переключение паузы), и (в будущем) IPC-командам/UI. Реальный
@@ -122,20 +137,25 @@ pub fn start(app: &AppHandle) -> ActivityTrackerHandle {
 
     let app_handle = app.clone();
     thread::spawn(move || {
-        // Whitelist читается один раз при старте потока, не на каждый poll
-        // (настройки меняются редко; перечитывание тоже не нужно до
-        // появления Settings UI в Итерации 5, которая сможет перезапускать
-        // трекер при изменении).
-        let whitelist = {
+        // Whitelist и пороги читаются один раз при старте потока, не на
+        // каждый poll (настройки меняются редко; живой reload — не раньше
+        // реальной необходимости). Изменение в Settings UI требует
+        // перезапуска приложения, чтобы вступить в силу — задокументировано
+        // в UI (см. `docs/iterations/05.md`).
+        let (whitelist, poll_interval_seconds, idle_threshold_seconds) = {
             let db = app_handle.state::<AppDatabase>();
             let conn = db.0.lock().expect("AppDatabase mutex poisoned");
-            load_whitelist(&conn)
+            (
+                load_whitelist(&conn),
+                read_u64_setting(&conn, SETTINGS_KEY_POLL_INTERVAL, DEFAULT_POLL_INTERVAL_SECONDS),
+                read_u64_setting(&conn, SETTINGS_KEY_IDLE_THRESHOLD, DEFAULT_IDLE_THRESHOLD_SECONDS),
+            )
         };
 
         let mut last_poll_at = now_utc_seconds();
         let mut poll_count: u64 = 0;
         loop {
-            thread::sleep(Duration::from_secs(POLL_INTERVAL_SECONDS));
+            thread::sleep(Duration::from_secs(poll_interval_seconds));
 
             let now = now_utc_seconds();
             let seconds_since_last_poll = now - last_poll_at;
@@ -148,9 +168,9 @@ pub fn start(app: &AppHandle) -> ActivityTrackerHandle {
 
             let signals = PollSignals {
                 seconds_since_last_poll,
-                expected_poll_interval_seconds: POLL_INTERVAL_SECONDS as i64,
+                expected_poll_interval_seconds: poll_interval_seconds as i64,
                 idle_seconds,
-                idle_threshold_seconds: IDLE_THRESHOLD_SECONDS,
+                idle_threshold_seconds,
                 is_locked,
                 is_paused,
                 foreground_process_name: foreground,
@@ -193,14 +213,18 @@ pub fn start(app: &AppHandle) -> ActivityTrackerHandle {
             if let Err(err) = activity_events::insert(&conn, &input) {
                 eprintln!("[tracker] failed to insert activity_event: {err}");
             }
+            // ТЗ, раздел 6: main/overlay подписываются на эти события вместо
+            // поллинга — один и тот же канал для обоих окон (общий сервис).
+            let _ = app_handle.emit("tracking:changed", ());
 
             poll_count += 1;
             if poll_count % SESSION_ENGINE_RUN_EVERY_N_POLLS == 0 {
                 let (day_start, day_end) = session_engine::today_local_range_utc();
-                if let Err(err) =
-                    session_engine::rebuild_detected_sessions_in_range(&mut conn, day_start, day_end, POLL_INTERVAL_SECONDS as i64)
-                {
-                    eprintln!("[tracker] session engine rebuild failed: {err}");
+                match session_engine::rebuild_detected_sessions_in_range(&mut conn, day_start, day_end, poll_interval_seconds as i64) {
+                    Ok(_) => {
+                        let _ = app_handle.emit("sessions:changed", ());
+                    }
+                    Err(err) => eprintln!("[tracker] session engine rebuild failed: {err}"),
                 }
             }
         }

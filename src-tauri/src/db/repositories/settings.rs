@@ -19,12 +19,19 @@ pub fn set(conn: &Connection, key: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+/// Не выведено ни в одну IPC-команду в Итерации 5 (нет "экспорт всех
+/// настроек" в UI) — оставлено как готовый инструмент для Итерации 9
+/// (экспорт/удаление данных).
+#[allow(dead_code)]
 pub fn get_all(conn: &Connection) -> Result<HashMap<String, String>> {
     let mut stmt = conn.prepare("SELECT key, value FROM settings")?;
     let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
     rows.collect()
 }
 
+/// Не используется напрямую командами — настройки в этой итерации только
+/// перезаписываются (`set`), явного "сбросить к дефолту" в UI нет.
+#[allow(dead_code)]
 pub fn remove(conn: &Connection, key: &str) -> Result<()> {
     conn.execute("DELETE FROM settings WHERE key = ?1", params![key])?;
     Ok(())

@@ -1,12 +1,5 @@
 mod commands;
-// Итерация 1: слой данных готов и протестирован (cargo test), но ещё не
-// подключён ни к одной IPC-команде — это Итерации 5+ (Dashboard/Timeline/
-// Overlay начнут реально вызывать репозитории). До тех пор большая часть
-// db/domain кода не используется вне тестов, отсюда dead_code — временно
-// и намеренно, не прячет ничего нового, что появится после подключения.
-#[allow(dead_code)]
 mod db;
-#[allow(dead_code)]
 mod domain;
 mod platform;
 mod tracking;
@@ -38,7 +31,30 @@ pub fn run() {
                 })
                 .build(),
         )
-        .invoke_handler(tauri::generate_handler![commands::app_info::get_app_info])
+        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
+        .invoke_handler(tauri::generate_handler![
+            commands::app_info::get_app_info,
+            commands::sessions::get_sessions_for_day,
+            commands::sessions::update_session,
+            commands::sessions::split_session,
+            commands::sessions::merge_sessions,
+            commands::sessions::exclude_session,
+            commands::sessions::restore_session,
+            commands::sessions::undo_session_edit,
+            commands::sessions::create_manual_session,
+            commands::projects::list_projects,
+            commands::projects::add_project,
+            commands::projects::update_project,
+            commands::projects::remove_project,
+            commands::settings::get_whitelist,
+            commands::settings::set_whitelist,
+            commands::settings::get_tracker_thresholds,
+            commands::settings::set_tracker_thresholds,
+            commands::settings::get_autostart_enabled,
+            commands::settings::set_autostart_enabled,
+            commands::tracking::get_tracking_paused,
+            commands::tracking::set_tracking_paused,
+        ])
         .setup(|app| {
             let handle = app.handle();
 

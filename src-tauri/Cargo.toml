@@ -28,6 +28,7 @@ windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_UI_Window
 regex = "1.13.1"
 chrono = "0.4.45"
 iana-time-zone = "0.1.65"
+tauri-plugin-autostart = "2.5.1"
 
 [[bin]]
 name = "devlog"

@@ -46,6 +46,9 @@ pub fn append(conn: &Connection, input: &CreateSessionEditInput) -> Result<Sessi
     })
 }
 
+/// Пока не выведено ни в одну IPC-команду (нет UI "история правок этой
+/// сессии" в Итерации 5) — используется напрямую тестами.
+#[allow(dead_code)]
 pub fn list_by_session(conn: &Connection, session_id: &str) -> Result<Vec<SessionEdit>> {
     let mut stmt = conn.prepare("SELECT * FROM session_edits WHERE sessionId = ?1 ORDER BY editedAtUtc, rowid")?;
     let rows = stmt.query_map(params![session_id], row_to_edit)?;

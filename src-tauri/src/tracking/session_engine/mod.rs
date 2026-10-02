@@ -8,7 +8,7 @@
 
 mod grouping;
 
-use chrono::{Datelike, Local, TimeZone};
+use chrono::{Local, TimeZone};
 use rusqlite::Connection;
 
 use crate::db::error::RepoResult;
@@ -60,14 +60,39 @@ fn local_midnight_boundaries_utc(range_start_utc: i64, range_end_utc: i64) -> Ve
     boundaries
 }
 
-/// Текущий год/месяц/день локально — используется вызывающим кодом
-/// (`tracking::tracker`) для определения границ "сегодня" без утечки
-/// `chrono`-типов наружу этого модуля.
+/// Полный локальный календарный день `date` как `[start, end)` в UTC-секундах.
+fn local_date_range_utc(date: chrono::NaiveDate) -> Option<(i64, i64)> {
+    let start = Local.from_local_datetime(&date.and_hms_opt(0, 0, 0)?).single()?;
+    let next_date = date.succ_opt()?;
+    let end = Local.from_local_datetime(&next_date.and_hms_opt(0, 0, 0)?).single()?;
+    Some((start.timestamp(), end.timestamp()))
+}
+
+/// Текущий локальный день целиком — используется `tracking::tracker` для
+/// периодической регенерации (конец диапазона в будущем безвреден: там
+/// просто ещё нет событий).
 pub fn today_local_range_utc() -> (i64, i64) {
-    let now = Local::now();
-    let start_of_day =
-        Local.with_ymd_and_hms(now.year(), now.month(), now.day(), 0, 0, 0).single().unwrap_or(now);
-    (start_of_day.timestamp(), now.timestamp() + 1)
+    let today = Local::now().date_naive();
+    local_date_range_utc(today).unwrap_or_else(|| {
+        let now = Local::now().timestamp();
+        (now, now + 1)
+    })
+}
+
+/// Разбирает `"today"` / `"yesterday"` / `""` (= сегодня) / `"YYYY-MM-DD"`
+/// в границы локального дня + нормализованную строку даты — для IPC-команд
+/// (`get_sessions_for_day`). Возвращает текстовую ошибку вместо
+/// `RepoError`, т.к. это ошибка пользовательского ввода, а не БД.
+pub fn resolve_local_day_range(input: &str) -> Result<(i64, i64, String), String> {
+    let today = Local::now().date_naive();
+    let date = match input.trim() {
+        "" | "today" => today,
+        "yesterday" => today.pred_opt().ok_or("date underflow")?,
+        other => chrono::NaiveDate::parse_from_str(other, "%Y-%m-%d")
+            .map_err(|e| format!("invalid date '{other}' (expected YYYY-MM-DD): {e}"))?,
+    };
+    let (start, end) = local_date_range_utc(date).ok_or_else(|| format!("cannot resolve local range for {date}"))?;
+    Ok((start, end, date.format("%Y-%m-%d").to_string()))
 }
 
 fn system_timezone_id() -> String {
@@ -84,7 +109,12 @@ pub fn rebuild_detected_sessions_in_range(
     range_end_utc: i64,
     poll_interval_seconds: i64,
 ) -> RepoResult<usize> {
-    let existing = work_sessions::list_by_range(conn, range_start_utc, range_end_utc, false)?;
+    // `include_deleted: true` — критично для protected-диапазонов: мягко
+    // удалённая (= "исключённая") сессия всё ещё должна "занимать" своё
+    // время, иначе Session Engine создаст новую detected-сессию на том же
+    // месте при следующем цикле (кнопка "Исключить" была бы недолговечной —
+    // баг, найденный при ручной проверке, см. docs/iterations/05.md).
+    let existing = work_sessions::list_by_range(conn, range_start_utc, range_end_utc, true)?;
 
     let protected: Vec<(i64, i64)> = existing
         .iter()
@@ -92,9 +122,14 @@ pub fn rebuild_detected_sessions_in_range(
         .map(|s| (s.started_at_utc, s.ended_at_utc.unwrap_or(range_end_utc)))
         .collect();
 
+    // Регенерируемые — только нетронутые detected-сессии, которые при этом
+    // ещё не удалены (удалённая пристинная detected-сессия не должна в
+    // принципе существовать после фикса `soft_delete`, выставляющего
+    // `is_manually_edited = true`, но проверка оставлена как защита от
+    // будущих регрессий).
     let regeneratable_ids: Vec<String> = existing
         .iter()
-        .filter(|s| !s.is_manually_edited && s.source == WorkSessionSource::Detected)
+        .filter(|s| !s.is_manually_edited && s.source == WorkSessionSource::Detected && s.deleted_at.is_none())
         .map(|s| s.id.clone())
         .collect();
 
@@ -158,5 +193,91 @@ mod tests {
         let noon = Local.from_local_datetime(&today.and_hms_opt(12, 0, 0).unwrap()).single().unwrap();
         let boundaries = local_midnight_boundaries_utc(noon.timestamp(), noon.timestamp() + 10);
         assert_eq!(boundaries, Vec::<i64>::new());
+    }
+
+    #[test]
+    fn resolve_empty_and_today_give_the_same_range_as_today_local_range_utc() {
+        let expected = today_local_range_utc();
+        let (start_empty, end_empty, _) = resolve_local_day_range("").unwrap();
+        let (start_today, end_today, date_str) = resolve_local_day_range("today").unwrap();
+        assert_eq!((start_empty, end_empty), expected);
+        assert_eq!((start_today, end_today), expected);
+        assert_eq!(date_str, Local::now().date_naive().format("%Y-%m-%d").to_string());
+    }
+
+    #[test]
+    fn resolve_yesterday_is_exactly_one_day_before_today() {
+        let (today_start, _, _) = resolve_local_day_range("today").unwrap();
+        let (yesterday_start, yesterday_end, _) = resolve_local_day_range("yesterday").unwrap();
+        assert_eq!(yesterday_end, today_start);
+        // Обычно ровно 86400с; 82800/90000 — переход на летнее/зимнее время.
+        let day_len = today_start - yesterday_start;
+        assert!([82_800, 86_400, 90_000].contains(&day_len), "unexpected day length: {day_len}");
+    }
+
+    #[test]
+    fn resolve_explicit_date_parses_correctly() {
+        let (start, end, date_str) = resolve_local_day_range("2026-01-15").unwrap();
+        assert!(start < end);
+        assert_eq!(date_str, "2026-01-15");
+    }
+
+    #[test]
+    fn resolve_rejects_malformed_date() {
+        assert!(resolve_local_day_range("not-a-date").is_err());
+        assert!(resolve_local_day_range("2026-13-99").is_err());
+    }
+
+    /// Интеграционный регрессионный тест (нашёлся при ручной проверке
+    /// Итерации 5 со скриншотами UI, см. docs/iterations/05.md): исключение
+    /// (`soft_delete`) detected-сессии должно быть долговечным — повторная
+    /// регенерация не должна создавать новую detected-сессию на том же
+    /// месте.
+    #[test]
+    fn excluded_session_is_not_resurrected_by_next_regeneration() {
+        use crate::db::repositories::activity_events as events_repo;
+        use crate::db::test_support::temp_database;
+        use crate::domain::activity_event::CreateActivityEventInput;
+        use crate::domain::confidence::Confidence;
+        use crate::domain::tracking_status::TrackingStatus;
+
+        let (mut conn, _dir) = temp_database();
+        let day_start = Local::now().date_naive().and_hms_opt(9, 0, 0).unwrap();
+        let start_utc = Local.from_local_datetime(&day_start).single().unwrap().timestamp();
+
+        for i in 0..3 {
+            events_repo::insert(
+                &conn,
+                &CreateActivityEventInput {
+                    timestamp_utc: start_utc + i * 5,
+                    process_name_sanitized: "webstorm64.exe".into(),
+                    app_category: "ide".into(),
+                    project_id: None,
+                    branch: None,
+                    detected_issue_key: None,
+                    idle_seconds: Some(0),
+                    state: TrackingStatus::Tracking,
+                    confidence: Confidence::High,
+                    reason: "test".into(),
+                },
+            )
+            .unwrap();
+        }
+
+        let (day_s, day_e) = (start_utc - 3600, start_utc + 3600);
+        rebuild_detected_sessions_in_range(&mut conn, day_s, day_e, 5).unwrap();
+
+        let before = work_sessions::list_by_range(&conn, day_s, day_e, false).unwrap();
+        assert_eq!(before.len(), 1, "ожидалась ровно одна обнаруженная сессия");
+        work_sessions::soft_delete(&mut conn, &before[0].id).unwrap();
+
+        // Повторная регенерация — как будто прошёл ещё один цикл трекера.
+        rebuild_detected_sessions_in_range(&mut conn, day_s, day_e, 5).unwrap();
+
+        let after_visible = work_sessions::list_by_range(&conn, day_s, day_e, false).unwrap();
+        assert_eq!(after_visible.len(), 0, "исключённая сессия не должна воскреснуть как новая detected");
+
+        let after_all = work_sessions::list_by_range(&conn, day_s, day_e, true).unwrap();
+        assert_eq!(after_all.len(), 1, "сама исключённая сессия должна остаться (мягко удалённой), не продублироваться");
     }
 }
