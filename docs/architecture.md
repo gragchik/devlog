@@ -81,6 +81,46 @@ main, и в renderer (через алиас `@shared/*` в обоих `tsconfig.
   слоя защиты — на случай, если один механизм не сработает для конкретного
   протокола/типа ресурса).
 
+## Слой данных (Итерация 1)
+
+`src/main/db/`:
+
+- `database.ts` — `createDatabase(filePath)`: открывает файл, включает
+  `journal_mode = WAL` и `foreign_keys = ON`, применяет миграции. Единая
+  точка создания соединения — используется и реальным приложением
+  (`app-database.ts`), и тестами (временный файл на диске,
+  `tests/integration/helpers/temp-database.ts`).
+- `app-database.ts` — синглтон `getAppDatabase()` на реальном пути
+  `app.getPath('userData')/devlog.sqlite3`. Открывается один раз при
+  `app.whenReady()` (`src/main/index.ts`), закрывается в `before-quit`.
+  Один и тот же процесс main обслуживает и главное окно, и overlay — значит,
+  они неизбежно работают с одним и тем же соединением (ТЗ: "Все изменения
+  из overlay и основного окна выполняются через один сервис"). При первом
+  открытии чистит `session_edits` старше 30 дней (FR-04.8).
+- `migrate.ts` + `migrations/000N-*.ts` — пронумерованные миграции,
+  журналируются в `_migrations`; каждая применяется в собственной
+  транзакции. Повторный запуск на той же БД — no-op.
+- `repositories/*.ts` — по одному классу на таблицу (`ProjectsRepository`,
+  `ActivityEventsRepository`, `WorkSessionsRepository`,
+  `SessionEditsRepository`, `WorklogDraftsRepository`,
+  `SettingsRepository`). `activity_events` — только `insert`/чтение
+  (первичная история неизменяема); мутации `work_sessions`
+  (`update`/`softDelete`/`restore`/`undoLastEdit`) всегда внутри
+  `db.transaction()` и атомарно пишут snapshot до/после в `session_edits`.
+
+Время хранится как **эпоха в секундах UTC** (`INTEGER`) во всех таблицах;
+`timezoneId` (IANA, например `Europe/Bishkek`) — отдельным полем на
+`work_sessions`, для будущего деления по локальным суткам (Session Engine,
+Итерация 4 — в Итерации 1 эта логика не реализована).
+
+**Чего в этом слое сознательно нет:** определение перекрытия интервалов и
+автоматическое разрешение конфликтов (FR-04.6), split/merge (FR-04),
+таблицы `issues_cache`/`jira_submissions` (появятся в Итерации 7 вместе с
+Jira-интеграцией — см. ADR-0004). IPC-каналы к этим репозиториям тоже не
+добавлены — Dashboard/Timeline (Итерация 5) и overlay-редактирование
+(Итерация 6) подключат их позже; Итерация 1 — только сам слой данных и его
+тесты.
+
 ## Что сознательно НЕ сделано в Итерации 0
 
 (чтобы не создавать иллюзию готовности) — подробности и обоснование в
