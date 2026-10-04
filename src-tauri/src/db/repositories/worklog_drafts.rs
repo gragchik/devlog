@@ -84,6 +84,21 @@ pub fn update(conn: &Connection, id: &str, patch: &UpdateWorklogDraftPatch) -> R
     Ok(get_by_id(conn, id)?.expect("just updated"))
 }
 
+/// Id сессий, на которые ссылаются черновики, начинающиеся в пределах
+/// суток от диапазона (черновик дня начинается с первой своей сессии, но
+/// пользователь мог сдвинуть начало — отсюда запас). Session Engine не
+/// пересоздаёт такие сессии.
+pub fn referenced_session_ids_near(conn: &Connection, start_utc: i64, end_utc: i64) -> Result<std::collections::HashSet<String>> {
+    const MARGIN_SECONDS: i64 = 86_400;
+    let mut stmt = conn.prepare("SELECT selectedSessionIdsJson FROM worklog_drafts WHERE startedAtUtc >= ?1 AND startedAtUtc < ?2")?;
+    let rows = stmt.query_map(params![start_utc - MARGIN_SECONDS, end_utc + MARGIN_SECONDS], |row| row.get::<_, String>(0))?;
+    let mut ids = std::collections::HashSet::new();
+    for json in rows {
+        ids.extend(serde_json::from_str::<Vec<String>>(&json?).unwrap_or_default());
+    }
+    Ok(ids)
+}
+
 pub fn remove(conn: &Connection, id: &str) -> Result<()> {
     conn.execute("DELETE FROM worklog_drafts WHERE id = ?1", params![id])?;
     Ok(())

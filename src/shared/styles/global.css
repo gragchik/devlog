@@ -786,3 +786,47 @@ button:disabled {
   flex: 1;
   resize: vertical;
 }
+
+/* ---------- Итерация 9: данные и диагностика ---------- */
+
+.diagnostics-issues {
+  margin: 8px 0;
+  padding-left: 18px;
+  color: #facc15;
+  font-size: 13px;
+}
+
+.diagnostics-log {
+  background: #0f172a;
+  border-radius: 6px;
+  padding: 10px;
+  max-height: 260px;
+  overflow: auto;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.data-delete-title {
+  margin-top: 18px !important;
+}
+
+.data-delete {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+  font-size: 13px;
+}
+
+.data-delete input[type='date'] {
+  background: #0f172a;
+  border: 1px solid #334155;
+  color: #e2e8f0;
+  border-radius: 4px;
+  padding: 3px 6px;
+}
+
+.settings-add-row button.danger {
+  background: #991b1b;
+}

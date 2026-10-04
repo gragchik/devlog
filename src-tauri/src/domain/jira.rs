@@ -169,7 +169,7 @@ impl std::fmt::Display for JiraError {
         match self {
             JiraError::NetworkUnknown(msg) => write!(f, "Jira недоступна или не ответила (проверьте сеть/VPN): {msg}"),
             JiraError::ApiError { status, message } => {
-                let body: String = message.chars().take(MAX_ERROR_BODY_CHARS).collect();
+                let body: String = crate::logging::redact(message).chars().take(MAX_ERROR_BODY_CHARS).collect();
                 write!(f, "Jira {status}: {}", api_error_hint(*status))?;
                 if !body.trim().is_empty() {
                     write!(f, " — {}", body.trim())?;

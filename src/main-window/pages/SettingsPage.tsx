@@ -4,6 +4,7 @@ import type { Project } from '@shared/types/project'
 import { TEMPLATE_PLACEHOLDERS, type CommentTemplate, type TemplateSettings } from '@shared/types/worklog'
 import type { TrackerThresholds, WhitelistEntry } from '@shared/types/settings'
 import { api, errorMessage } from '@shared/api'
+import { DataSection, DiagnosticsSection } from '../components/DataSections'
 
 function ProjectsSection(): JSX.Element {
   const [projects, setProjects] = useState<Project[]>([])
@@ -465,6 +466,8 @@ export function SettingsPage(): JSX.Element {
       <ShortcutSection />
       <JiraSection />
       <TemplatesSection />
+      <DataSection />
+      <DiagnosticsSection />
     </div>
   )
 }

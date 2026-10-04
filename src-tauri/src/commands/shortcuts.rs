@@ -6,7 +6,7 @@ use crate::shortcuts::{configured_shortcut, register_overlay_shortcut, SHORTCUT_
 
 #[tauri::command]
 pub fn get_overlay_shortcut(db: State<AppDatabase>) -> Result<String, String> {
-    let conn = db.0.lock().map_err(|_| "database lock poisoned".to_string())?;
+    let conn = db.lock();
     Ok(configured_shortcut(&conn))
 }
 
@@ -18,6 +18,6 @@ pub fn get_overlay_shortcut(db: State<AppDatabase>) -> Result<String, String> {
 #[tauri::command]
 pub fn set_overlay_shortcut(app: AppHandle, db: State<AppDatabase>, accelerator: String) -> Result<(), String> {
     register_overlay_shortcut(&app, &accelerator)?;
-    let conn = db.0.lock().map_err(|_| "database lock poisoned".to_string())?;
+    let conn = db.lock();
     settings::set(&conn, SHORTCUT_SETTINGS_KEY, &accelerator).map_err(|e| e.to_string())
 }

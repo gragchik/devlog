@@ -10,13 +10,13 @@ use crate::tracking::whitelist::{WhitelistEntry, WHITELIST_SETTINGS_KEY};
 
 #[tauri::command]
 pub fn get_whitelist(db: State<AppDatabase>) -> Result<Vec<WhitelistEntry>, String> {
-    let conn = db.0.lock().map_err(|_| "database lock poisoned".to_string())?;
+    let conn = db.lock();
     Ok(crate::tracking::whitelist::load_whitelist(&conn))
 }
 
 #[tauri::command]
 pub fn set_whitelist(db: State<AppDatabase>, entries: Vec<WhitelistEntry>) -> Result<(), String> {
-    let conn = db.0.lock().map_err(|_| "database lock poisoned".to_string())?;
+    let conn = db.lock();
     let json = serde_json::to_string(&entries).map_err(|e| e.to_string())?;
     settings::set(&conn, WHITELIST_SETTINGS_KEY, &json).map_err(|e| e.to_string())
 }
@@ -34,7 +34,7 @@ pub struct TrackerThresholds {
 
 #[tauri::command]
 pub fn get_tracker_thresholds(db: State<AppDatabase>) -> Result<TrackerThresholds, String> {
-    let conn = db.0.lock().map_err(|_| "database lock poisoned".to_string())?;
+    let conn = db.lock();
     let read = |key: &str, default: u64| {
         settings::get(&conn, key).ok().flatten().and_then(|v| v.parse::<u64>().ok()).filter(|v| *v > 0).unwrap_or(default)
     };
@@ -49,7 +49,7 @@ pub fn set_tracker_thresholds(db: State<AppDatabase>, thresholds: TrackerThresho
     if thresholds.idle_threshold_seconds == 0 || thresholds.poll_interval_seconds == 0 {
         return Err("thresholds must be positive".to_string());
     }
-    let conn = db.0.lock().map_err(|_| "database lock poisoned".to_string())?;
+    let conn = db.lock();
     settings::set(&conn, SETTINGS_KEY_IDLE_THRESHOLD, &thresholds.idle_threshold_seconds.to_string()).map_err(|e| e.to_string())?;
     settings::set(&conn, SETTINGS_KEY_POLL_INTERVAL, &thresholds.poll_interval_seconds.to_string()).map_err(|e| e.to_string())
 }

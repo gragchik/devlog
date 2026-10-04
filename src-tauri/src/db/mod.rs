@@ -2,6 +2,7 @@ pub mod app_database;
 pub mod database;
 pub mod error;
 pub mod ids;
+pub mod maintenance;
 pub mod migrations;
 pub mod repositories;
 

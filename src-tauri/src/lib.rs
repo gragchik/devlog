@@ -2,6 +2,7 @@ mod commands;
 mod db;
 mod domain;
 mod integrations;
+mod logging;
 mod platform;
 mod shortcuts;
 mod tracking;
@@ -31,6 +32,9 @@ pub fn run() {
                 })
                 .build(),
         )
+        // Диалог сохранения для экспорта открывает Rust (commands/data.rs) —
+        // frontend-capability на диалоги не выдаётся.
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, None))
         .invoke_handler(tauri::generate_handler![
             commands::app_info::get_app_info,
@@ -78,16 +82,26 @@ pub fn run() {
             commands::worklog::worklog_recalculate_draft,
             commands::worklog::worklog_get_reminder,
             commands::worklog::worklog_dismiss_reminder,
+            commands::data::diagnostics_get,
+            commands::data::data_export,
+            commands::data::data_delete,
         ])
         .setup(|app| {
             let handle = app.handle();
+
+            // Лог — первым: всё, что случится при открытии БД, должно оставить след.
+            if let Err(err) = app.path().app_log_dir().map_err(|e| e.to_string()).and_then(|dir| logging::init(&dir).map_err(|e| e.to_string())) {
+                eprintln!("[logging] лог-файл недоступен: {err}");
+            }
+            logging::info("app", format!("запуск DevLog {}", env!("CARGO_PKG_VERSION")));
 
             // Открываем БД до создания окон — все команды, которые
             // понадобятся позже, должны видеть уже готовую, промигрированную
             // БД (ТЗ, раздел 5: "Все изменения из overlay и основного окна
             // выполняются через один сервис").
-            let database = db::app_database::init(handle)?;
+            let (database, startup_report) = db::app_database::init(handle)?;
             app.manage(database);
+            app.manage(startup_report);
 
             // Activity Tracker (Итерация 2): фоновый поток опроса, не
             // зависит от жизненного цикла окон (ТЗ, раздел 7). Хендл кладём
@@ -104,12 +118,12 @@ pub fn run() {
             // в прошлой сессии), иначе дефолт.
             let accelerator = {
                 let db = app.state::<db::app_database::AppDatabase>();
-                let conn = db.0.lock().expect("AppDatabase mutex poisoned");
+                let conn = db.lock();
                 shortcuts::configured_shortcut(&conn)
             };
             if let Err(err) = shortcuts::register_overlay_shortcut(handle, &accelerator) {
                 // FR-06.2: конфликт с другим приложением — предупреждаем, не падаем.
-                eprintln!("[shortcuts] Не удалось зарегистрировать {accelerator}: {err}. Overlay можно открыть через трей.");
+                logging::warn("shortcuts", format!("Не удалось зарегистрировать {accelerator}: {err}. Overlay можно открыть через трей."));
             }
 
             Ok(())

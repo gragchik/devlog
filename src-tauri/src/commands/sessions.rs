@@ -61,14 +61,14 @@ fn notify_sessions_changed(app: &AppHandle) {
 #[tauri::command]
 pub fn get_sessions_for_day(db: State<AppDatabase>, local_date: String) -> Result<DaySessionsView, String> {
     let (start, end, resolved_date) = session_engine::resolve_local_day_range(&local_date).map_err(|e| e.to_string())?;
-    let conn = db.0.lock().map_err(|_| "database lock poisoned".to_string())?;
+    let conn = db.lock();
     let sessions = work_sessions::list_by_range(&conn, start, end, true).map_err(|e| e.to_string())?;
     Ok(build_day_view(resolved_date, sessions))
 }
 
 #[tauri::command]
 pub fn update_session(app: AppHandle, db: State<AppDatabase>, id: String, patch: UpdateWorkSessionPatch) -> Result<WorkSession, String> {
-    let mut conn = db.0.lock().map_err(|_| "database lock poisoned".to_string())?;
+    let mut conn = db.lock();
     let result = work_sessions::update(&mut conn, &id, &patch).map_err(|e| e.to_string())?;
     notify_sessions_changed(&app);
     Ok(result)
@@ -76,7 +76,7 @@ pub fn update_session(app: AppHandle, db: State<AppDatabase>, id: String, patch:
 
 #[tauri::command]
 pub fn split_session(app: AppHandle, db: State<AppDatabase>, id: String, at_utc: i64) -> Result<(WorkSession, WorkSession), String> {
-    let mut conn = db.0.lock().map_err(|_| "database lock poisoned".to_string())?;
+    let mut conn = db.lock();
     let result = work_sessions::split(&mut conn, &id, at_utc).map_err(|e| e.to_string())?;
     notify_sessions_changed(&app);
     Ok(result)
@@ -84,7 +84,7 @@ pub fn split_session(app: AppHandle, db: State<AppDatabase>, id: String, at_utc:
 
 #[tauri::command]
 pub fn merge_sessions(app: AppHandle, db: State<AppDatabase>, first_id: String, second_id: String) -> Result<WorkSession, String> {
-    let mut conn = db.0.lock().map_err(|_| "database lock poisoned".to_string())?;
+    let mut conn = db.lock();
     let result = work_sessions::merge(&mut conn, &first_id, &second_id).map_err(|e| e.to_string())?;
     notify_sessions_changed(&app);
     Ok(result)
@@ -92,7 +92,7 @@ pub fn merge_sessions(app: AppHandle, db: State<AppDatabase>, first_id: String, 
 
 #[tauri::command]
 pub fn exclude_session(app: AppHandle, db: State<AppDatabase>, id: String) -> Result<WorkSession, String> {
-    let mut conn = db.0.lock().map_err(|_| "database lock poisoned".to_string())?;
+    let mut conn = db.lock();
     let result = work_sessions::soft_delete(&mut conn, &id).map_err(|e| e.to_string())?;
     notify_sessions_changed(&app);
     Ok(result)
@@ -100,7 +100,7 @@ pub fn exclude_session(app: AppHandle, db: State<AppDatabase>, id: String) -> Re
 
 #[tauri::command]
 pub fn restore_session(app: AppHandle, db: State<AppDatabase>, id: String) -> Result<WorkSession, String> {
-    let mut conn = db.0.lock().map_err(|_| "database lock poisoned".to_string())?;
+    let mut conn = db.lock();
     let result = work_sessions::restore(&mut conn, &id).map_err(|e| e.to_string())?;
     notify_sessions_changed(&app);
     Ok(result)
@@ -108,7 +108,7 @@ pub fn restore_session(app: AppHandle, db: State<AppDatabase>, id: String) -> Re
 
 #[tauri::command]
 pub fn undo_session_edit(app: AppHandle, db: State<AppDatabase>, id: String) -> Result<Option<WorkSession>, String> {
-    let mut conn = db.0.lock().map_err(|_| "database lock poisoned".to_string())?;
+    let mut conn = db.lock();
     let result = work_sessions::undo_last_edit(&mut conn, &id).map_err(|e| e.to_string())?;
     notify_sessions_changed(&app);
     Ok(result)
@@ -120,7 +120,7 @@ pub fn undo_session_edit(app: AppHandle, db: State<AppDatabase>, id: String) -> 
 #[tauri::command]
 pub fn create_manual_session(app: AppHandle, db: State<AppDatabase>, mut input: CreateWorkSessionInput) -> Result<WorkSession, String> {
     input.source = WorkSessionSource::Manual;
-    let conn = db.0.lock().map_err(|_| "database lock poisoned".to_string())?;
+    let conn = db.lock();
     let result = work_sessions::create(&conn, &input).map_err(|e| e.to_string())?;
     notify_sessions_changed(&app);
     Ok(result)

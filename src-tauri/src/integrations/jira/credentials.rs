@@ -76,4 +76,24 @@ mod tests {
         // Повторное удаление — не ошибка.
         delete_secret(&username).unwrap();
     }
+
+    /// Критерий Итерации 9: "секреты не попадают в SQLite plain fields".
+    /// Полный путь сохранения подключения — и поиск токена во всём файле
+    /// БД (включая WAL), а не только в ожидаемой таблице.
+    #[test]
+    fn saving_connection_never_puts_token_into_sqlite() {
+        let (conn, dir) = crate::db::test_support::temp_database();
+        let username = format!("test-{}", crate::db::ids::generate_id());
+        let token = format!("ATATT-test-token-{}", crate::db::ids::generate_id());
+
+        store_connection_details(&conn, "https://acme.atlassian.net", "dev@example.com").unwrap();
+        store_secret(&username, &token).unwrap();
+        drop(conn);
+
+        for entry in std::fs::read_dir(dir.path()).unwrap() {
+            let bytes = std::fs::read(entry.unwrap().path()).unwrap();
+            assert!(!bytes.windows(token.len()).any(|w| w == token.as_bytes()), "токен найден в файле БД");
+        }
+        delete_secret(&username).unwrap();
+    }
 }

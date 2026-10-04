@@ -26,6 +26,7 @@ use crate::db::repositories::{jira_submissions, worklog_drafts};
 use crate::domain::jira::{JiraError, JiraSubmissionState, JiraUser, RemoteWorklog, WorklogEntry};
 use crate::domain::worklog_draft::{UpdateWorklogDraftPatch, WorklogDraftStatus};
 use crate::integrations::jira::{compute_payload_hash, JiraProvider};
+use crate::logging;
 use crate::tracking::issue_key::is_valid_issue_key;
 
 use super::drafts::MIN_WORKLOG_SECONDS;
@@ -56,7 +57,7 @@ pub struct DraftSubmitResult {
 }
 
 fn lock(db: &Mutex<Connection>) -> Result<std::sync::MutexGuard<'_, Connection>, String> {
-    db.lock().map_err(|_| "database lock poisoned".to_string())
+    Ok(crate::db::app_database::lock_recovering(db))
 }
 
 /// Свой worklog в Jira, совпадающий с локальной записью (FR-07.6/7.7).
@@ -122,6 +123,16 @@ fn record_outcome(conn: &mut Connection, submission_id: &str, draft_id: &str, ou
     tx.commit()
 }
 
+/// В лог — ключ задачи и итог, но не текст комментария и не время работы.
+fn log_outcome(issue_key: &str, outcome: &SubmitOutcome) {
+    match outcome {
+        SubmitOutcome::Posted { remote_worklog_id } => logging::info("jira", format!("{issue_key}: worklog создан ({})", remote_worklog_id.as_deref().unwrap_or("id неизвестен"))),
+        SubmitOutcome::Failed { message } => logging::warn("jira", format!("{issue_key}: отказ Jira: {message}")),
+        SubmitOutcome::Unknown { message } => logging::warn("jira", format!("{issue_key}: результат неизвестен, нужна проверка: {message}")),
+        SubmitOutcome::Blocked { message } => logging::info("jira", format!("{issue_key}: не отправлено: {message}")),
+    }
+}
+
 async fn submit_one(db: &Mutex<Connection>, provider: &dyn JiraProvider, me: &JiraUser, draft_id: &str) -> SubmitOutcome {
     let blocked = |message: String| SubmitOutcome::Blocked { message };
 
@@ -165,12 +176,17 @@ async fn submit_one(db: &Mutex<Connection>, provider: &dyn JiraProvider, me: &Ji
     let outcome = match provider.post_worklog(&entry).await {
         Ok(result) => SubmitOutcome::Posted { remote_worklog_id: Some(result.remote_worklog_id) },
         Err(err @ JiraError::NetworkUnknown(_)) => SubmitOutcome::Unknown { message: err.to_string() },
+        // 5xx на POST — не "точно отказ": 502/504 отдаёт шлюз перед Jira,
+        // когда бэкенд мог уже создать запись. Безопасная сторона —
+        // reconciliation, а не разрешённый повтор (FR-07.6).
+        Err(err @ JiraError::ApiError { status: 500..=599, .. }) => SubmitOutcome::Unknown { message: err.to_string() },
         Err(err) => SubmitOutcome::Failed { message: err.to_string() },
     };
 
     // 5. Итог. Если даже записать его не удалось, попытка останется
     //    `pending` и при следующем старте станет `unknown` — безопасная
     //    сторона (без слепого повтора).
+    log_outcome(&entry.issue_key, &outcome);
     if let Err(message) = lock(db).and_then(|mut conn| record_outcome(&mut conn, &submission_id, draft_id, &outcome).map_err(|e| e.to_string())) {
         return SubmitOutcome::Unknown { message: format!("результат отправки не сохранён локально ({message}) — проверьте запись в Jira") };
     }
@@ -225,6 +241,7 @@ pub async fn reconcile(db: &Mutex<Connection>, provider: &dyn JiraProvider, subm
         Some(found) => SubmitOutcome::Posted { remote_worklog_id: Some(found.id.clone()) },
         None => SubmitOutcome::Failed { message: "в Jira такой записи нет — черновик можно отправить заново".into() },
     };
+    log_outcome(&entry.issue_key, &outcome);
     let mut conn = lock(db)?;
     record_outcome(&mut conn, &submission.id, &submission.local_draft_id, &outcome).map_err(|e| e.to_string())?;
     Ok(outcome)
@@ -300,6 +317,8 @@ mod tests {
             Ok(JiraIssueSummary { issue_key: issue_key.into(), title: "t".into() })
         }
         async fn list_worklogs_near(&self, _issue_key: &str, _started: i64) -> Result<Vec<RemoteWorklog>, JiraError> {
+            // Точка переключения: даёт параллельной отправке пройти ту же проверку.
+            tokio::task::yield_now().await;
             Ok(self.worklogs.lock().unwrap().clone())
         }
         async fn post_worklog(&self, entry: &WorklogEntry) -> Result<JiraWorklogResult, JiraError> {
@@ -424,6 +443,35 @@ mod tests {
 
         jira.set_behaviour(PostBehaviour::Accept);
         assert!(matches!(submit_drafts(&db, &jira, std::slice::from_ref(&draft.id)).await[0].outcome, SubmitOutcome::Posted { .. }));
+    }
+
+    #[tokio::test]
+    async fn client_errors_fail_cleanly_but_server_errors_need_reconciliation() {
+        // 401/403/404/429 — Jira точно не создала запись: можно исправить и
+        // повторить. 5xx — шлюз мог ответить ошибкой уже после создания.
+        for (status, expect_unknown) in [(401, false), (403, false), (404, false), (429, false), (500, true), (502, true), (504, true)] {
+            let (db, _dir, draft) = setup();
+            let jira = FakeJira::new(PostBehaviour::Reject(status));
+            let outcome = submit_drafts(&db, &jira, std::slice::from_ref(&draft.id)).await.remove(0).outcome;
+            let is_unknown = matches!(outcome, SubmitOutcome::Unknown { .. });
+            let is_failed = matches!(outcome, SubmitOutcome::Failed { .. });
+            assert!(if expect_unknown { is_unknown } else { is_failed }, "status {status}: {outcome:?}");
+            assert_eq!(draft_status(&db, &draft.id), WorklogDraftStatus::Draft, "status {status}: черновик цел");
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_double_submit_posts_only_once() {
+        // Двойной клик / два окна: две отправки одного черновика
+        // одновременно. Вторая должна упереться в `pending` первой.
+        let (db, _dir, draft) = setup();
+        let jira = FakeJira::new(PostBehaviour::Accept);
+        let ids = [draft.id.clone()];
+        let (a, b) = tokio::join!(submit_drafts(&db, &jira, &ids), submit_drafts(&db, &jira, &ids));
+
+        assert_eq!(jira.posts.load(Ordering::SeqCst), 1);
+        let posted = [&a[0].outcome, &b[0].outcome].iter().filter(|o| matches!(o, SubmitOutcome::Posted { .. })).count();
+        assert_eq!(posted, 1);
     }
 
     #[tokio::test]

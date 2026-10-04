@@ -30,7 +30,7 @@ pub(super) fn ensure_main_window(window: &WebviewWindow) -> Result<(), String> {
 }
 
 pub(super) fn lock(db: &AppDatabase) -> Result<std::sync::MutexGuard<'_, rusqlite::Connection>, String> {
-    db.0.lock().map_err(|_| "database lock poisoned".to_string())
+    Ok(db.lock())
 }
 
 fn build_provider(db: &AppDatabase) -> Result<JiraCloudProvider, String> {

@@ -13,6 +13,7 @@ import type {
 import type { CreateProjectInput, Project, UpdateProjectInput } from './types/project'
 import type { TrackerThresholds, WhitelistEntry } from './types/settings'
 import type { TemplateSettings, WorklogReminder } from './types/worklog'
+import type { DeleteRequest, DeleteSummary, DiagnosticsView, ExportKind } from './types/data'
 import type { CreateWorkSessionInput, DaySessionsView, UpdateWorkSessionPatch, WorkSession } from './types/work-session'
 
 /**
@@ -73,6 +74,11 @@ export const api = {
   worklogRecalculateDraft: (draftId: string) => invoke<unknown>('worklog_recalculate_draft', { draftId }),
   worklogGetReminder: () => invoke<WorklogReminder | null>('worklog_get_reminder'),
   worklogDismissReminder: (localDate: string) => invoke<void>('worklog_dismiss_reminder', { localDate }),
+  diagnosticsGet: () => invoke<DiagnosticsView>('diagnostics_get'),
+  /** Путь сохранённого файла или `null`, если диалог закрыт. */
+  dataExport: (kind: ExportKind) => invoke<string | null>('data_export', { kind }),
+  dataDelete: (request: DeleteRequest, confirmation: string) =>
+    invoke<DeleteSummary>('data_delete', { request, confirmation }),
   jiraSubmitDrafts: (draftIds: string[]) => invoke<DraftSubmitResult[]>('jira_submit_drafts', { draftIds }),
   jiraReconcileSubmission: (submissionId: string) => invoke<SubmitOutcome>('jira_reconcile_submission', { submissionId }),
   jiraListUnknownSubmissions: () => invoke<UnknownSubmissionView[]>('jira_list_unknown_submissions'),

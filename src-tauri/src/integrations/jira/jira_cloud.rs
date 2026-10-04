@@ -60,6 +60,18 @@ fn parse_started(value: &str) -> Option<i64> {
     DateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.3f%z").ok().map(|dt| dt.timestamp())
 }
 
+/// Ответ с ошибочным статусом → `ApiError`. Для 429 добавляем
+/// `Retry-After`, чтобы пользователь знал, когда повторять.
+async fn api_error(response: Response) -> JiraError {
+    let status = response.status().as_u16();
+    let retry_after = response.headers().get("Retry-After").and_then(|v| v.to_str().ok()).map(str::to_string);
+    let mut message = response.text().await.unwrap_or_default();
+    if let Some(seconds) = retry_after {
+        message = format!("повторить можно через {seconds} с. {message}");
+    }
+    JiraError::ApiError { status, message }
+}
+
 /// Ошибочный HTTP-статус → `ApiError` (сервер точно ответил). Успешный —
 /// отдаём ответ дальше.
 async fn ensure_success(response: Response) -> Result<Response, JiraError> {
@@ -67,8 +79,7 @@ async fn ensure_success(response: Response) -> Result<Response, JiraError> {
     if status.is_success() {
         Ok(response)
     } else {
-        let message = response.text().await.unwrap_or_default();
-        Err(JiraError::ApiError { status: status.as_u16(), message })
+        Err(api_error(response).await)
     }
 }
 
@@ -167,8 +178,7 @@ impl JiraProvider for JiraCloudProvider {
             let remote_id = parsed["id"].as_str().ok_or_else(|| JiraError::NetworkUnknown(format!("Jira ответила {status} без поля id в теле (запись могла быть создана)")))?;
             Ok(JiraWorklogResult { local_draft_id: entry.local_draft_id.clone(), remote_worklog_id: remote_id.to_string() })
         } else {
-            let message = response.text().await.unwrap_or_default();
-            Err(JiraError::ApiError { status: status.as_u16(), message })
+            Err(api_error(response).await)
         }
     }
 }
@@ -329,6 +339,21 @@ mod tests {
         let issue = provider.get_issue("OB-448").await.unwrap();
         assert_eq!(issue.issue_key, "OB-448");
         assert_eq!(issue.title, "Массовые платежи");
+    }
+
+    #[tokio::test]
+    async fn rate_limit_reports_retry_after() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/rest/api/3/issue/OB-448/worklog"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "30"))
+            .mount(&server)
+            .await;
+
+        let provider = JiraCloudProvider::new(server.uri(), "user@example.com", "token");
+        let err = provider.post_worklog(&entry()).await.unwrap_err();
+        assert!(matches!(err, JiraError::ApiError { status: 429, .. }));
+        assert!(err.to_string().contains("30 с"), "{err}");
     }
 
     #[tokio::test]

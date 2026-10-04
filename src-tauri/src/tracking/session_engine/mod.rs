@@ -12,7 +12,7 @@ use chrono::{Local, TimeZone};
 use rusqlite::Connection;
 
 use crate::db::error::RepoResult;
-use crate::db::repositories::{activity_events, work_sessions};
+use crate::db::repositories::{activity_events, work_sessions, worklog_drafts};
 use crate::domain::work_session::{CreateWorkSessionInput, WorkSessionSource};
 
 /// Множитель над интервалом опроса — после такого разрыва между
@@ -116,9 +116,17 @@ pub fn rebuild_detected_sessions_in_range(
     // баг, найденный при ручной проверке, см. docs/iterations/05.md).
     let existing = work_sessions::list_by_range(conn, range_start_utc, range_end_utc, true)?;
 
+    // Сессии, на которые ссылается черновик worklog (`selectedSessionIds`),
+    // тоже неприкосновенны: пересоздание сменило бы их id, и черновик /
+    // напоминание потеряли бы связь с ними (риск №1 из Итерации 4).
+    // Работа, продолжившаяся после формирования черновика, просто попадёт в
+    // новую соседнюю detected-сессию.
+    let referenced = worklog_drafts::referenced_session_ids_near(conn, range_start_utc, range_end_utc)?;
+    let is_frozen = |s: &crate::domain::work_session::WorkSession| s.is_manually_edited || s.source == WorkSessionSource::Manual || referenced.contains(&s.id);
+
     let protected: Vec<(i64, i64)> = existing
         .iter()
-        .filter(|s| s.is_manually_edited || s.source == WorkSessionSource::Manual)
+        .filter(|s| is_frozen(s))
         .map(|s| (s.started_at_utc, s.ended_at_utc.unwrap_or(range_end_utc)))
         .collect();
 
@@ -129,7 +137,7 @@ pub fn rebuild_detected_sessions_in_range(
     // будущих регрессий).
     let regeneratable_ids: Vec<String> = existing
         .iter()
-        .filter(|s| !s.is_manually_edited && s.source == WorkSessionSource::Detected && s.deleted_at.is_none())
+        .filter(|s| !is_frozen(s) && s.source == WorkSessionSource::Detected && s.deleted_at.is_none())
         .map(|s| s.id.clone())
         .collect();
 
@@ -279,5 +287,116 @@ mod tests {
 
         let after_all = work_sessions::list_by_range(&conn, day_s, day_e, true).unwrap();
         assert_eq!(after_all.len(), 1, "сама исключённая сессия должна остаться (мягко удалённой), не продублироваться");
+    }
+
+    /// E2E-сценарий 9: процесс убит в 09:10 посреди работы, запущен снова в
+    /// 13:00 на той же ветке. Пауза не должна стать "гигантским интервалом"
+    /// работы, а пересборка после рестарта — задвоить уже учтённое.
+    #[test]
+    fn forced_kill_and_restart_does_not_create_giant_interval() {
+        use crate::db::repositories::activity_events as events_repo;
+        use crate::db::test_support::temp_database;
+        use crate::domain::activity_event::CreateActivityEventInput;
+        use crate::domain::confidence::Confidence;
+        use crate::domain::tracking_status::TrackingStatus;
+
+        let (mut conn, _dir) = temp_database();
+        let nine = Local::now().date_naive().and_hms_opt(9, 0, 0).unwrap();
+        let start_utc = Local.from_local_datetime(&nine).single().unwrap().timestamp();
+        let insert = |conn: &Connection, from: i64, count: i64| {
+            for i in 0..count {
+                events_repo::insert(
+                    conn,
+                    &CreateActivityEventInput {
+                        timestamp_utc: from + i * 5,
+                        process_name_sanitized: "webstorm64.exe".into(),
+                        app_category: "ide".into(),
+                        project_id: None,
+                        branch: Some("feature/OB-448".into()),
+                        detected_issue_key: Some("OB-448".into()),
+                        idle_seconds: Some(0),
+                        state: TrackingStatus::Tracking,
+                        confidence: Confidence::High,
+                        reason: "test".into(),
+                    },
+                )
+                .unwrap();
+            }
+        };
+        let (day_s, day_e) = (start_utc - 9 * 3600, start_utc + 15 * 3600);
+
+        insert(&conn, start_utc, 120); // 09:00–09:10, затем kill
+        rebuild_detected_sessions_in_range(&mut conn, day_s, day_e, 5).unwrap();
+        insert(&conn, start_utc + 4 * 3600, 120); // рестарт в 13:00, ещё 10 минут
+        rebuild_detected_sessions_in_range(&mut conn, day_s, day_e, 5).unwrap();
+        rebuild_detected_sessions_in_range(&mut conn, day_s, day_e, 5).unwrap(); // повторная пересборка идемпотентна
+
+        let sessions = work_sessions::list_by_range(&conn, day_s, day_e, false).unwrap();
+        assert_eq!(sessions.len(), 2, "до и после падения — разные сессии");
+        assert_eq!(sessions.iter().map(|s| s.active_seconds).sum::<i64>(), 1200, "ровно 20 минут работы");
+        assert!(sessions.iter().all(|s| s.ended_at_utc.unwrap() - s.started_at_utc <= 600));
+    }
+
+    /// Риск №1 из Итерации 4: черновик worklog ссылается на id
+    /// detected-сессии — пересборка не должна этот id уничтожить, а работа,
+    /// продолжившаяся после черновика, не должна задваиваться.
+    #[test]
+    fn session_referenced_by_worklog_draft_keeps_its_id_and_time_is_not_doubled() {
+        use crate::db::repositories::activity_events as events_repo;
+        use crate::db::test_support::temp_database;
+        use crate::domain::activity_event::CreateActivityEventInput;
+        use crate::domain::confidence::Confidence;
+        use crate::domain::tracking_status::TrackingStatus;
+        use crate::domain::worklog_draft::CreateWorklogDraftInput;
+
+        let (mut conn, _dir) = temp_database();
+        let nine = Local::now().date_naive().and_hms_opt(9, 0, 0).unwrap();
+        let start_utc = Local.from_local_datetime(&nine).single().unwrap().timestamp();
+        let insert = |conn: &Connection, from: i64, count: i64| {
+            for i in 0..count {
+                events_repo::insert(
+                    conn,
+                    &CreateActivityEventInput {
+                        timestamp_utc: from + i * 5,
+                        process_name_sanitized: "webstorm64.exe".into(),
+                        app_category: "ide".into(),
+                        project_id: None,
+                        branch: None,
+                        detected_issue_key: Some("OB-448".into()),
+                        idle_seconds: Some(0),
+                        state: TrackingStatus::Tracking,
+                        confidence: Confidence::High,
+                        reason: "test".into(),
+                    },
+                )
+                .unwrap();
+            }
+        };
+        let (day_s, day_e) = (start_utc - 3600, start_utc + 7200);
+
+        insert(&conn, start_utc, 12); // 09:00:00–09:01:00
+        rebuild_detected_sessions_in_range(&mut conn, day_s, day_e, 5).unwrap();
+        let first = work_sessions::list_by_range(&conn, day_s, day_e, false).unwrap().remove(0);
+        worklog_drafts::create(
+            &conn,
+            &CreateWorklogDraftInput {
+                local_day: "d".into(),
+                issue_key: "OB-448".into(),
+                time_spent_seconds: 60,
+                started_at_utc: first.started_at_utc,
+                comment: None,
+                selected_session_ids: vec![first.id.clone()],
+                status: None,
+            },
+        )
+        .unwrap();
+
+        insert(&conn, start_utc + 60, 12); // работа продолжилась 09:01–09:02
+        rebuild_detected_sessions_in_range(&mut conn, day_s, day_e, 5).unwrap();
+
+        let sessions = work_sessions::list_by_range(&conn, day_s, day_e, false).unwrap();
+        assert!(sessions.iter().any(|s| s.id == first.id && s.active_seconds == 60), "сессия черновика не пересоздана");
+        let total: i64 = sessions.iter().map(|s| s.active_seconds).sum();
+        assert_eq!(total, 120, "две минуты работы, без двойного учёта");
     }
 }

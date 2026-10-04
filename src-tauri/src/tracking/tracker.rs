@@ -18,7 +18,8 @@ use crate::platform::windows_activity_adapter::{get_foreground_process_name, get
 use crate::tracking::engine::{decide, PollSignals};
 use crate::tracking::git_context::GitContextResult;
 use crate::tracking::session_engine;
-use crate::tracking::whitelist::load_whitelist;
+use crate::logging;
+use crate::tracking::whitelist::{load_whitelist, WhitelistEntry};
 use crate::tracking::{git_adapter, git_context};
 
 /// Session Engine перестраивает сессии не на каждый poll (дорого и не
@@ -110,7 +111,7 @@ fn resolve_git_context(conn: &Connection) -> GitContextResult {
     let projects = match projects_repo::list(conn) {
         Ok(list) => list,
         Err(err) => {
-            eprintln!("[tracker] failed to list projects: {err}");
+            logging::error("tracker", format!("failed to list projects: {err}"));
             Vec::new()
         }
     };
@@ -149,7 +150,7 @@ pub fn start(app: &AppHandle) -> ActivityTrackerHandle {
         // в UI (см. `docs/iterations/05.md`).
         let (whitelist, poll_interval_seconds, idle_threshold_seconds) = {
             let db = app_handle.state::<AppDatabase>();
-            let conn = db.0.lock().expect("AppDatabase mutex poisoned");
+            let conn = db.lock();
             (
                 load_whitelist(&conn),
                 read_u64_setting(&conn, SETTINGS_KEY_POLL_INTERVAL, DEFAULT_POLL_INTERVAL_SECONDS),
@@ -159,83 +160,122 @@ pub fn start(app: &AppHandle) -> ActivityTrackerHandle {
 
         let mut last_poll_at = now_utc_seconds();
         let mut poll_count: u64 = 0;
+        // День, для которого уже пересобран предыдущий. `None` — ещё ни
+        // разу (старт): после падения/выключения последние события
+        // прошлого дня могли не успеть попасть в сессии.
+        let mut previous_day_rebuilt_for: Option<chrono::NaiveDate> = None;
         loop {
             thread::sleep(Duration::from_secs(poll_interval_seconds));
 
             let now = now_utc_seconds();
             let seconds_since_last_poll = now - last_poll_at;
             last_poll_at = now;
-
-            let foreground = get_foreground_process_name();
-            let idle_seconds = get_system_idle_seconds();
-            let is_locked = is_session_locked(foreground.as_deref());
-            let is_paused = paused.load(Ordering::SeqCst);
-
-            let signals = PollSignals {
-                seconds_since_last_poll,
-                expected_poll_interval_seconds: poll_interval_seconds as i64,
-                idle_seconds,
-                idle_threshold_seconds,
-                is_locked,
-                is_paused,
-                foreground_process_name: foreground,
-            };
-            let decided = decide(&signals, &whitelist);
-
-            let db = app_handle.state::<AppDatabase>();
-            let mut conn = db.0.lock().expect("AppDatabase mutex poisoned");
-
-            // Git-контекст имеет смысл резолвить только когда пользователь
-            // реально работает (TRACKING) — во всех остальных состояниях
-            // (idle/paused/locked/suspended/unknown) задача заведомо не
-            // определяется этим event'ом.
-            let (project_id, branch, detected_issue_key, confidence, reason) =
-                if decided.state == TrackingStatus::Tracking {
-                    let git = resolve_git_context(&conn);
-                    (
-                        git.project_id,
-                        git.branch,
-                        git.issue_key,
-                        weaker_confidence(decided.confidence, git.confidence),
-                        format!("{}; {}", decided.reason, git.reason),
-                    )
-                } else {
-                    (None, None, None, decided.confidence, decided.reason)
-                };
-
-            let input = CreateActivityEventInput {
-                timestamp_utc: now,
-                process_name_sanitized: decided.process_name_sanitized,
-                app_category: decided.app_category,
-                project_id,
-                branch,
-                detected_issue_key,
-                idle_seconds: decided.idle_seconds,
-                state: decided.state,
-                confidence,
-                reason,
-            };
-            if let Err(err) = activity_events::insert(&conn, &input) {
-                eprintln!("[tracker] failed to insert activity_event: {err}");
-            }
-            // ТЗ, раздел 6: main/overlay подписываются на эти события вместо
-            // поллинга — один и тот же канал для обоих окон (общий сервис).
-            let _ = app_handle.emit("tracking:changed", ());
-
             poll_count += 1;
-            if poll_count % SESSION_ENGINE_RUN_EVERY_N_POLLS == 0 {
-                let (day_start, day_end) = session_engine::today_local_range_utc();
-                match session_engine::rebuild_detected_sessions_in_range(&mut conn, day_start, day_end, poll_interval_seconds as i64) {
-                    Ok(_) => {
-                        let _ = app_handle.emit("sessions:changed", ());
-                    }
-                    Err(err) => eprintln!("[tracker] session engine rebuild failed: {err}"),
+
+            // Паника в одном опросе (неожиданные данные ОС, баг) не должна
+            // молча останавливать учёт времени до перезапуска: пишем в лог
+            // (panic hook) и продолжаем со следующего опроса.
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                poll_once(&app_handle, &paused, &whitelist, now, seconds_since_last_poll, poll_interval_seconds, idle_threshold_seconds);
+                let today = chrono::Local::now().date_naive();
+                if previous_day_rebuilt_for != Some(today) {
+                    rebuild_previous_day(&app_handle, today, poll_interval_seconds);
+                    previous_day_rebuilt_for = Some(today);
                 }
+                if poll_count % SESSION_ENGINE_RUN_EVERY_N_POLLS == 0 {
+                    rebuild_today(&app_handle, poll_interval_seconds);
+                }
+            }));
+            if result.is_err() {
+                logging::error("tracker", "опрос завершился паникой, трекер продолжает работу");
             }
         }
     });
 
     handle
+}
+
+fn rebuild_today(app_handle: &AppHandle, poll_interval_seconds: u64) {
+    let (day_start, day_end) = session_engine::today_local_range_utc();
+    rebuild_range(app_handle, day_start, day_end, poll_interval_seconds);
+}
+
+fn rebuild_previous_day(app_handle: &AppHandle, today: chrono::NaiveDate, poll_interval_seconds: u64) {
+    let Some(yesterday) = today.pred_opt() else { return };
+    if let Some((start, end)) = session_engine::local_date_range_utc(yesterday) {
+        rebuild_range(app_handle, start, end, poll_interval_seconds);
+    }
+}
+
+fn rebuild_range(app_handle: &AppHandle, start: i64, end: i64, poll_interval_seconds: u64) {
+    let db = app_handle.state::<AppDatabase>();
+    let mut conn = db.lock();
+    match session_engine::rebuild_detected_sessions_in_range(&mut conn, start, end, poll_interval_seconds as i64) {
+        Ok(_) => {
+            let _ = app_handle.emit("sessions:changed", ());
+        }
+        Err(err) => logging::error("tracker", format!("session engine rebuild failed: {err}")),
+    }
+}
+
+/// Один опрос: собрать сигналы, решить состояние, записать событие.
+fn poll_once(
+    app_handle: &AppHandle,
+    paused: &AtomicBool,
+    whitelist: &[WhitelistEntry],
+    now: i64,
+    seconds_since_last_poll: i64,
+    poll_interval_seconds: u64,
+    idle_threshold_seconds: u64,
+) {
+    let foreground = get_foreground_process_name();
+    let idle_seconds = get_system_idle_seconds();
+    let is_locked = is_session_locked(foreground.as_deref());
+    let is_paused = paused.load(Ordering::SeqCst);
+
+    let signals = PollSignals {
+        seconds_since_last_poll,
+        expected_poll_interval_seconds: poll_interval_seconds as i64,
+        idle_seconds,
+        idle_threshold_seconds,
+        is_locked,
+        is_paused,
+        foreground_process_name: foreground,
+    };
+    let decided = decide(&signals, whitelist);
+
+    let db = app_handle.state::<AppDatabase>();
+    let conn = db.lock();
+
+    // Git-контекст имеет смысл резолвить только когда пользователь
+    // реально работает (TRACKING) — во всех остальных состояниях
+    // (idle/paused/locked/suspended/unknown) задача заведомо не
+    // определяется этим event'ом.
+    let (project_id, branch, detected_issue_key, confidence, reason) = if decided.state == TrackingStatus::Tracking {
+        let git = resolve_git_context(&conn);
+        (git.project_id, git.branch, git.issue_key, weaker_confidence(decided.confidence, git.confidence), format!("{}; {}", decided.reason, git.reason))
+    } else {
+        (None, None, None, decided.confidence, decided.reason)
+    };
+
+    let input = CreateActivityEventInput {
+        timestamp_utc: now,
+        process_name_sanitized: decided.process_name_sanitized,
+        app_category: decided.app_category,
+        project_id,
+        branch,
+        detected_issue_key,
+        idle_seconds: decided.idle_seconds,
+        state: decided.state,
+        confidence,
+        reason,
+    };
+    if let Err(err) = activity_events::insert(&conn, &input) {
+        logging::error("tracker", format!("failed to insert activity_event: {err}"));
+    }
+    // ТЗ, раздел 6: main/overlay подписываются на эти события вместо
+    // поллинга — один и тот же канал для обоих окон (общий сервис).
+    let _ = app_handle.emit("tracking:changed", ());
 }
 
 #[cfg(test)]
