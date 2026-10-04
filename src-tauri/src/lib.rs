@@ -7,6 +7,7 @@ mod shortcuts;
 mod tracking;
 mod tray;
 mod windows;
+mod worklog;
 
 use tauri::{Manager, WindowEvent};
 use tauri_plugin_global_shortcut::ShortcutState;
@@ -58,6 +59,19 @@ pub fn run() {
             commands::shortcuts::get_overlay_shortcut,
             commands::shortcuts::set_overlay_shortcut,
             commands::windows::show_main_window_command,
+            commands::jira::jira_get_connection_status,
+            commands::jira::jira_save_connection,
+            commands::jira::jira_clear_connection,
+            commands::jira::jira_test_connection,
+            commands::jira::jira_fetch_issue,
+            commands::jira::worklog_get_day,
+            commands::jira::worklog_generate_drafts,
+            commands::jira::worklog_update_draft,
+            commands::jira::worklog_delete_draft,
+            commands::jira::jira_submit_drafts,
+            commands::jira::jira_reconcile_submission,
+            commands::jira::jira_list_unknown_submissions,
+            commands::jira::jira_resolve_submission_manually,
         ])
         .setup(|app| {
             let handle = app.handle();

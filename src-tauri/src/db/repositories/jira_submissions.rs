@@ -67,6 +67,17 @@ pub fn list_unknown(conn: &Connection) -> Result<Vec<JiraSubmission>> {
     rows.collect()
 }
 
+/// Вызывается при старте приложения: в этот момент ни один запрос к Jira
+/// не выполняется, значит любая `pending`-попытка — след падения/закрытия
+/// процесса посреди POST. Её результат неизвестен (FR-07.6) — переводим в
+/// `unknown`, чтобы UI предложил reconciliation, а не повтор.
+pub fn mark_stale_pending_as_unknown(conn: &Connection) -> Result<usize> {
+    conn.execute(
+        "UPDATE jira_submissions SET state = ?1 WHERE state = ?2",
+        params![JiraSubmissionState::Unknown.as_db_str(), JiraSubmissionState::Pending.as_db_str()],
+    )
+}
+
 pub fn list_by_local_draft(conn: &Connection, local_draft_id: &str) -> Result<Vec<JiraSubmission>> {
     let mut stmt = conn.prepare("SELECT * FROM jira_submissions WHERE localDraftId = ?1 ORDER BY attemptedAtUtc DESC")?;
     let rows = stmt.query_map(params![local_draft_id], row_to_submission)?;
@@ -123,6 +134,18 @@ mod tests {
         let unknowns = list_unknown(&conn).unwrap();
         assert_eq!(unknowns.len(), 1);
         assert_eq!(unknowns[0].id, a.id);
+    }
+
+    #[test]
+    fn stale_pending_becomes_unknown_on_startup() {
+        let (conn, _dir) = temp_database();
+        let pending = create_pending(&conn, "draft-1", "OB-448", "hash-1").unwrap();
+        let posted = create_pending(&conn, "draft-2", "OB-419", "hash-2").unwrap();
+        resolve(&conn, &posted.id, JiraSubmissionState::Posted, Some("1")).unwrap();
+
+        assert_eq!(mark_stale_pending_as_unknown(&conn).unwrap(), 1);
+        assert_eq!(get_by_id(&conn, &pending.id).unwrap().unwrap().state, JiraSubmissionState::Unknown);
+        assert_eq!(get_by_id(&conn, &posted.id).unwrap().unwrap().state, JiraSubmissionState::Posted);
     }
 
     #[test]

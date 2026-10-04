@@ -4,7 +4,7 @@ use tauri::{AppHandle, Manager};
 
 use super::database::create_database;
 use super::ids::now_utc_seconds;
-use super::repositories::session_edits;
+use super::repositories::{jira_submissions, session_edits};
 
 const SESSION_EDITS_RETENTION_DAYS: i64 = 30;
 const SECONDS_PER_DAY: i64 = 86_400;
@@ -29,6 +29,8 @@ pub fn init(app: &AppHandle) -> anyhow::Result<AppDatabase> {
 
     let conn = create_database(db_path)?;
     session_edits::prune_older_than(&conn, now_utc_seconds() - SESSION_EDITS_RETENTION_DAYS * SECONDS_PER_DAY)?;
+    // FR-07.6: POST, прерванный падением процесса, — результат неизвестен.
+    jira_submissions::mark_stale_pending_as_unknown(&conn)?;
 
     Ok(AppDatabase(Mutex::new(conn)))
 }

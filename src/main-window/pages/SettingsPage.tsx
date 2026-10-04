@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import type { JiraConnectionStatus } from '@shared/types/jira'
 import type { Project } from '@shared/types/project'
 import type { TrackerThresholds, WhitelistEntry } from '@shared/types/settings'
 import { api, errorMessage } from '@shared/api'
@@ -268,6 +269,99 @@ function ShortcutSection(): JSX.Element {
   )
 }
 
+function JiraSection(): JSX.Element {
+  const [status, setStatus] = useState<JiraConnectionStatus | null>(null)
+  const [baseUrl, setBaseUrl] = useState('')
+  const [email, setEmail] = useState('')
+  const [apiToken, setApiToken] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [info, setInfo] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    api
+      .jiraGetConnectionStatus()
+      .then((s) => {
+        setStatus(s)
+        setBaseUrl(s.baseUrl ?? '')
+        setEmail(s.email ?? '')
+      })
+      .catch((err: unknown) => setError(errorMessage(err)))
+  }, [])
+
+  async function run(action: () => Promise<string>): Promise<void> {
+    setBusy(true)
+    setInfo(null)
+    try {
+      setInfo(await action())
+      setError(null)
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const saveAndTest = (): Promise<void> =>
+    run(async () => {
+      setStatus(await api.jiraSaveConnection({ baseUrl, email, apiToken }))
+      // Токен сразу забываем на стороне UI — он уже в Windows Credential Manager.
+      setApiToken('')
+      const user = await api.jiraTestConnection()
+      return `Сохранено. Подключено как ${user.displayName}.`
+    })
+
+  const test = (): Promise<void> =>
+    run(async () => `Соединение работает: ${(await api.jiraTestConnection()).displayName}.`)
+
+  const clear = (): Promise<void> =>
+    run(async () => {
+      await api.jiraClearConnection()
+      setStatus({ configured: false, baseUrl: null, email: null })
+      setBaseUrl('')
+      setEmail('')
+      return 'Подключение удалено, токен стёрт из Windows Credential Manager.'
+    })
+
+  return (
+    <section className="card">
+      <h2>Jira</h2>
+      <p className="muted">
+        Jira Cloud (FR-07): адрес вида <code>https://company.atlassian.net</code>, email и API token (создаётся в
+        id.atlassian.com → Security → API tokens). Токен хранится в Windows Credential Manager, а не в базе. Используйте
+        Jira API только если это разрешено правилами вашей организации.
+      </p>
+      {status?.configured && <p className="muted">Подключение сохранено. Оставьте поле токена пустым, чтобы не менять его.</p>}
+      {error && <p className="error">{error}</p>}
+      {info && <p className="muted">{info}</p>}
+      <div className="settings-add-row">
+        <input placeholder="https://company.atlassian.net" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
+        <input placeholder="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+        <input
+          type="password"
+          autoComplete="off"
+          placeholder={status?.configured ? 'токен сохранён' : 'API token'}
+          value={apiToken}
+          onChange={(e) => setApiToken(e.target.value)}
+        />
+        <button type="button" onClick={() => void saveAndTest()} disabled={busy || !baseUrl.trim() || !email.trim()}>
+          Сохранить и проверить
+        </button>
+        {status?.configured && (
+          <>
+            <button type="button" onClick={() => void test()} disabled={busy}>
+              Проверить
+            </button>
+            <button type="button" onClick={() => void clear()} disabled={busy}>
+              Отключить
+            </button>
+          </>
+        )}
+      </div>
+    </section>
+  )
+}
+
 export function SettingsPage(): JSX.Element {
   return (
     <div className="page">
@@ -277,6 +371,7 @@ export function SettingsPage(): JSX.Element {
       <ThresholdsSection />
       <AutostartSection />
       <ShortcutSection />
+      <JiraSection />
     </div>
   )
 }

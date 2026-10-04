@@ -569,3 +569,151 @@ button {
   font-size: 12px;
   cursor: pointer;
 }
+
+/* ---------- Worklog Review (Итерация 7) ---------- */
+
+.worklog-row {
+  background: #0f172a;
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.worklog-row-done {
+  opacity: 0.7;
+}
+
+.worklog-row-head,
+.worklog-row-body,
+.worklog-row-actions,
+.worklog-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.worklog-row-body {
+  align-items: flex-start;
+}
+
+.worklog-row-body label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.worklog-row input,
+.worklog-row textarea {
+  background: #1e293b;
+  border: 1px solid #334155;
+  color: #e2e8f0;
+  border-radius: 4px;
+  padding: 5px 7px;
+  font-family: inherit;
+}
+
+.worklog-row input[type='number'] {
+  width: 80px;
+}
+
+.worklog-row textarea {
+  flex: 1;
+  min-width: 240px;
+  resize: vertical;
+}
+
+.worklog-issue {
+  width: 110px;
+  font-weight: 600;
+}
+
+.worklog-title {
+  flex: 1;
+  font-size: 13px;
+}
+
+.worklog-row-actions button,
+.worklog-footer button {
+  background: #334155;
+  border: none;
+  color: #e2e8f0;
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.worklog-row-actions button.danger {
+  background: transparent;
+  border: 1px solid #334155;
+  color: #f87171;
+  margin-left: auto;
+}
+
+.worklog-footer {
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.worklog-footer button.primary {
+  background: #2563eb;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.badge.worklog-status-posted {
+  background: #166534;
+}
+
+.badge.worklog-status-unknown {
+  background: #a16207;
+}
+
+.badge.worklog-status-failed {
+  background: #991b1b;
+}
+
+.worklog-preview table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.worklog-preview th,
+.worklog-preview td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid #334155;
+  vertical-align: top;
+}
+
+.worklog-preview-comment {
+  white-space: pre-wrap;
+}
+
+.worklog-results {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+}
+
+.worklog-result-posted {
+  color: #4ade80;
+}
+
+.worklog-result-unknown {
+  color: #facc15;
+}
+
+.worklog-result-failed,
+.worklog-result-blocked {
+  color: #f87171;
+}

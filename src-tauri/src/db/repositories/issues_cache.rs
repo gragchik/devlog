@@ -24,12 +24,6 @@ pub fn get(conn: &Connection, issue_key: &str) -> Result<Option<CachedIssue>> {
     conn.query_row("SELECT * FROM issues_cache WHERE issueKey = ?1", params![issue_key], row_to_issue).optional()
 }
 
-pub fn list_all(conn: &Connection) -> Result<Vec<CachedIssue>> {
-    let mut stmt = conn.prepare("SELECT * FROM issues_cache ORDER BY issueKey")?;
-    let rows = stmt.query_map([], row_to_issue)?;
-    rows.collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -56,14 +50,5 @@ mod tests {
     fn get_returns_none_for_unknown_key() {
         let (conn, _dir) = temp_database();
         assert_eq!(get(&conn, "MISSING-1").unwrap(), None);
-    }
-
-    #[test]
-    fn list_all_returns_everything_sorted() {
-        let (conn, _dir) = temp_database();
-        upsert(&conn, "OB-419", "Возвраты", "jira-cloud").unwrap();
-        upsert(&conn, "OB-448", "Массовые платежи", "jira-cloud").unwrap();
-        let all = list_all(&conn).unwrap();
-        assert_eq!(all.iter().map(|i| i.issue_key.clone()).collect::<Vec<_>>(), vec!["OB-419", "OB-448"]);
     }
 }

@@ -1,4 +1,15 @@
 import { invoke } from '@tauri-apps/api/core'
+import type {
+  DraftSubmitResult,
+  JiraConnectionInput,
+  JiraConnectionStatus,
+  JiraIssueSummary,
+  JiraUser,
+  SubmitOutcome,
+  UnknownSubmissionView,
+  WorklogDayView,
+  WorklogDraftEdit
+} from './types/jira'
 import type { CreateProjectInput, Project, UpdateProjectInput } from './types/project'
 import type { TrackerThresholds, WhitelistEntry } from './types/settings'
 import type { CreateWorkSessionInput, DaySessionsView, UpdateWorkSessionPatch, WorkSession } from './types/work-session'
@@ -41,7 +52,24 @@ export const api = {
   getOverlayShortcut: () => invoke<string>('get_overlay_shortcut'),
   setOverlayShortcut: (accelerator: string) => invoke<void>('set_overlay_shortcut', { accelerator }),
 
-  showMainWindow: () => invoke<void>('show_main_window_command')
+  showMainWindow: (tab?: 'dashboard' | 'timeline' | 'worklog' | 'settings') =>
+    invoke<void>('show_main_window_command', { tab: tab ?? null }),
+
+  // Jira / Worklog Review — Rust разрешает их только главному окну.
+  jiraGetConnectionStatus: () => invoke<JiraConnectionStatus>('jira_get_connection_status'),
+  jiraSaveConnection: (input: JiraConnectionInput) => invoke<JiraConnectionStatus>('jira_save_connection', { input }),
+  jiraClearConnection: () => invoke<void>('jira_clear_connection'),
+  jiraTestConnection: () => invoke<JiraUser>('jira_test_connection'),
+  jiraFetchIssue: (issueKey: string) => invoke<JiraIssueSummary>('jira_fetch_issue', { issueKey }),
+  worklogGetDay: (localDate: string) => invoke<WorklogDayView>('worklog_get_day', { localDate }),
+  worklogGenerateDrafts: (localDate: string) => invoke<WorklogDayView>('worklog_generate_drafts', { localDate }),
+  worklogUpdateDraft: (id: string, edit: WorklogDraftEdit) => invoke<unknown>('worklog_update_draft', { id, edit }),
+  worklogDeleteDraft: (id: string) => invoke<void>('worklog_delete_draft', { id }),
+  jiraSubmitDrafts: (draftIds: string[]) => invoke<DraftSubmitResult[]>('jira_submit_drafts', { draftIds }),
+  jiraReconcileSubmission: (submissionId: string) => invoke<SubmitOutcome>('jira_reconcile_submission', { submissionId }),
+  jiraListUnknownSubmissions: () => invoke<UnknownSubmissionView[]>('jira_list_unknown_submissions'),
+  jiraResolveSubmissionManually: (submissionId: string, posted: boolean) =>
+    invoke<SubmitOutcome>('jira_resolve_submission_manually', { submissionId, posted })
 }
 
 /** Приводит ошибку из `invoke()` (обычно строка от Tauri) к читаемому тексту. */

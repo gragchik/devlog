@@ -1,3 +1,5 @@
+use std::sync::LazyLock;
+
 use regex::Regex;
 
 /// Извлекает issue key из имени ветки по настраиваемому паттерну
@@ -17,10 +19,28 @@ pub fn extract_issue_key(branch: &str, pattern: &str) -> Option<String> {
     regex.find(&normalized).map(|m| m.as_str().to_string())
 }
 
+static STRICT_ISSUE_KEY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Z][A-Z0-9]+-\d+$").expect("static regex"));
+
+/// Строгая проверка ключа, введённого пользователем, перед тем как он
+/// попадёт в путь Jira REST URL (`/issue/{key}/worklog`) — никаких `/`,
+/// `?`, `..` и прочего, что поменяло бы адрес запроса.
+pub fn is_valid_issue_key(value: &str) -> bool {
+    STRICT_ISSUE_KEY.is_match(value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::project::DEFAULT_ISSUE_REGEX;
+
+    #[test]
+    fn strict_issue_key_rejects_url_breaking_input() {
+        assert!(is_valid_issue_key("OB-448"));
+        assert!(is_valid_issue_key("AB2-1"));
+        for bad in ["ob-448", "OB-448/../x", "OB-448?a=b", "OB-", "-1", "", "OB 448"] {
+            assert!(!is_valid_issue_key(bad), "{bad}");
+        }
+    }
 
     #[test]
     fn extracts_key_from_typical_feature_branch() {

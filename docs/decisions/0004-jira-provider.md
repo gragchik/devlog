@@ -43,3 +43,11 @@ interface JiraProvider {
   плодить мёртвый код в Итерации 0).
 - Секреты (API token) хранятся через Electron `safeStorage`, не в SQLite
   plaintext — зафиксировано в НФТ, реализация в Итерации 7/9.
+  **Обновление (Итерация 7, Tauri):** вместо `safeStorage` — крейт
+  `keyring` (Windows Credential Manager), см. ADR-0008. Фактический trait
+  в Rust: `verify_connection` / `get_issue` / `list_worklogs_near` /
+  `post_worklog` — `listOwnWorklogs(range)` сузился до выборки по задаче
+  вокруг нужного времени (именно это нужно для проверки дублей и
+  reconciliation). `MockJiraProvider` живёт в тестах
+  (`worklog::submission::tests::FakeJira`), в UI без подключения
+  работает "Копировать отчёт".

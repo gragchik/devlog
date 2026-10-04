@@ -1,7 +1,7 @@
 //! Хранение Jira-токена (FR-07.4: "пароли в plaintext не хранить" —
 //! через `keyring` крейт, обёртку над Windows Credential Manager, а НЕ в
-//! SQLite). `base_url`/`email` не секретны — живут в обычной таблице
-//! `settings`.
+//! SQLite; ADR-0008). `base_url`/`email` не секретны — живут в обычной
+//! таблице `settings`.
 
 use keyring::Entry;
 
@@ -13,25 +13,37 @@ const KEYRING_TOKEN_USERNAME: &str = "jira-api-token";
 pub const SETTINGS_KEY_BASE_URL: &str = "jira.baseUrl";
 pub const SETTINGS_KEY_EMAIL: &str = "jira.email";
 
-fn token_entry() -> Result<Entry, String> {
-    Entry::new(KEYRING_SERVICE, KEYRING_TOKEN_USERNAME).map_err(|e| format!("keyring unavailable: {e}"))
+fn entry(username: &str) -> Result<Entry, String> {
+    Entry::new(KEYRING_SERVICE, username).map_err(|e| format!("keyring unavailable: {e}"))
 }
 
-pub fn store_api_token(token: &str) -> Result<(), String> {
-    token_entry()?.set_password(token).map_err(|e| e.to_string())
+fn store_secret(username: &str, secret: &str) -> Result<(), String> {
+    entry(username)?.set_password(secret).map_err(|e| e.to_string())
 }
 
-pub fn load_api_token() -> Option<String> {
-    token_entry().ok()?.get_password().ok()
+fn load_secret(username: &str) -> Option<String> {
+    entry(username).ok()?.get_password().ok()
 }
 
-pub fn delete_api_token() -> Result<(), String> {
-    match token_entry()?.delete_credential() {
+fn delete_secret(username: &str) -> Result<(), String> {
+    match entry(username)?.delete_credential() {
         Ok(()) => Ok(()),
         // Не настроено — уже отсутствует, не ошибка с точки зрения вызывающего.
         Err(keyring::Error::NoEntry) => Ok(()),
         Err(e) => Err(e.to_string()),
     }
+}
+
+pub fn store_api_token(token: &str) -> Result<(), String> {
+    store_secret(KEYRING_TOKEN_USERNAME, token)
+}
+
+pub fn load_api_token() -> Option<String> {
+    load_secret(KEYRING_TOKEN_USERNAME)
+}
+
+pub fn delete_api_token() -> Result<(), String> {
+    delete_secret(KEYRING_TOKEN_USERNAME)
 }
 
 pub fn store_connection_details(conn: &rusqlite::Connection, base_url: &str, email: &str) -> rusqlite::Result<()> {
@@ -41,4 +53,27 @@ pub fn store_connection_details(conn: &rusqlite::Connection, base_url: &str, ema
 
 pub fn load_connection_details(conn: &rusqlite::Connection) -> (Option<String>, Option<String>) {
     (settings::get(conn, SETTINGS_KEY_BASE_URL).ok().flatten(), settings::get(conn, SETTINGS_KEY_EMAIL).ok().flatten())
+}
+
+pub fn clear_connection_details(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+    settings::remove(conn, SETTINGS_KEY_BASE_URL)?;
+    settings::remove(conn, SETTINGS_KEY_EMAIL)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Реальный Windows Credential Manager (не мок) — отдельное имя записи,
+    /// чтобы тест не трогал настоящий токен пользователя.
+    #[test]
+    fn secret_round_trips_through_credential_manager() {
+        let username = format!("test-{}", crate::db::ids::generate_id());
+        store_secret(&username, "secret-token").unwrap();
+        assert_eq!(load_secret(&username).as_deref(), Some("secret-token"));
+        delete_secret(&username).unwrap();
+        assert_eq!(load_secret(&username), None);
+        // Повторное удаление — не ошибка.
+        delete_secret(&username).unwrap();
+    }
 }

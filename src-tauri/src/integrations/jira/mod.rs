@@ -9,29 +9,29 @@ pub mod credentials;
 mod jira_cloud;
 mod payload_hash;
 
-// Пока не используются ни одной командой (это ещё будет сделано в
-// `commands/jira.rs`, следующий шаг Итерации 7) — без `#[allow(dead_code)]`
-// компилятор ругается на неиспользуемый `pub use`, хотя сами модули (и их
-// тесты) уже полноценно работают.
-#[allow(unused_imports)]
 pub use jira_cloud::JiraCloudProvider;
-#[allow(unused_imports)]
 pub use payload_hash::compute_payload_hash;
 
 use async_trait::async_trait;
 
-use crate::domain::jira::{JiraError, JiraIssueSummary, JiraWorklogResult, WorklogEntry};
+use crate::domain::jira::{JiraError, JiraIssueSummary, JiraUser, JiraWorklogResult, RemoteWorklog, WorklogEntry};
+
+/// Идентификатор провайдера в `issues_cache.sourceProvider`.
+pub const JIRA_CLOUD_PROVIDER_ID: &str = "jira-cloud";
 
 #[async_trait]
 pub trait JiraProvider: Send + Sync {
-    /// Проверка соединения (FR-07.4: "Проверить соединение" в Settings) —
-    /// должна фактически сходить в API, не просто проверить, что поля не
-    /// пустые.
-    async fn verify_connection(&self) -> Result<(), JiraError>;
+    /// Проверка соединения и пользователя (FR-07.2) — должна фактически
+    /// сходить в API, не просто проверить, что поля не пустые.
+    async fn verify_connection(&self) -> Result<JiraUser, JiraError>;
 
-    /// Поиск issue по ключу или JQL-подстроке — для автокомплита при
-    /// составлении черновика (FR-07.2).
-    async fn search_issues(&self, query: &str) -> Result<Vec<JiraIssueSummary>, JiraError>;
+    /// Название задачи по ключу (FR-07.2) — для preview и `issues_cache`.
+    async fn get_issue(&self, issue_key: &str) -> Result<JiraIssueSummary, JiraError>;
+
+    /// Worklog'и задачи с `started` в небольшом окне вокруг
+    /// `started_at_utc` — remote-проверка дублей перед публикацией
+    /// (FR-07.7) и reconciliation после таймаута (FR-07.6).
+    async fn list_worklogs_near(&self, issue_key: &str, started_at_utc: i64) -> Result<Vec<RemoteWorklog>, JiraError>;
 
     /// FR-07.3/7.5: публикация одной worklog-записи. Успех — есть
     /// `remoteWorklogId`. Ошибка различает `ApiError` (точно не принято) и

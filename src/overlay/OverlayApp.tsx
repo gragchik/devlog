@@ -156,7 +156,7 @@ export function OverlayApp(): JSX.Element {
 
       <footer className="overlay-footer">
         <span>Итого: {view ? formatDuration(view.totalActiveSeconds) : '…'}</span>
-        <button type="button" onClick={() => void api.showMainWindow()}>
+        <button type="button" onClick={() => void api.showMainWindow('worklog')}>
           Отчёт
         </button>
         <button type="button" onClick={() => void api.showMainWindow()}>
