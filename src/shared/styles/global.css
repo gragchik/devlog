@@ -717,3 +717,72 @@ button:disabled {
 .worklog-result-blocked {
   color: #f87171;
 }
+
+/* ---------- Итерация 8: напоминание, фильтры, шаблоны ---------- */
+
+.reminder-card {
+  border-left: 3px solid #facc15;
+}
+
+.reminder-card p {
+  margin: 0 0 10px;
+}
+
+.reminder-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.reminder-actions button:not(.link-button) {
+  background: #334155;
+  border: none;
+  color: #e2e8f0;
+  border-radius: 6px;
+  padding: 7px 14px;
+  cursor: pointer;
+}
+
+.reminder-actions button.primary {
+  background: #2563eb;
+}
+
+.timeline-filters input {
+  background: #0f172a;
+  border: 1px solid #334155;
+  color: #e2e8f0;
+  border-radius: 4px;
+  padding: 5px 8px;
+  margin-left: auto;
+}
+
+.worklog-row-actions select {
+  background: #1e293b;
+  border: 1px solid #334155;
+  color: #e2e8f0;
+  border-radius: 6px;
+  padding: 5px 8px;
+}
+
+.template-list li {
+  align-items: flex-start;
+}
+
+.template-list .template-name {
+  width: 170px;
+}
+
+.template-list input,
+.template-list textarea {
+  background: #1e293b;
+  border: 1px solid #334155;
+  color: #e2e8f0;
+  border-radius: 4px;
+  padding: 5px 7px;
+  font-family: inherit;
+}
+
+.template-list textarea {
+  flex: 1;
+  resize: vertical;
+}

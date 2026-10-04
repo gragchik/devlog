@@ -72,6 +72,12 @@ pub fn run() {
             commands::jira::jira_reconcile_submission,
             commands::jira::jira_list_unknown_submissions,
             commands::jira::jira_resolve_submission_manually,
+            commands::worklog::worklog_get_templates,
+            commands::worklog::worklog_save_templates,
+            commands::worklog::worklog_apply_template,
+            commands::worklog::worklog_recalculate_draft,
+            commands::worklog::worklog_get_reminder,
+            commands::worklog::worklog_dismiss_reminder,
         ])
         .setup(|app| {
             let handle = app.handle();

@@ -12,6 +12,7 @@ import type {
 } from './types/jira'
 import type { CreateProjectInput, Project, UpdateProjectInput } from './types/project'
 import type { TrackerThresholds, WhitelistEntry } from './types/settings'
+import type { TemplateSettings, WorklogReminder } from './types/worklog'
 import type { CreateWorkSessionInput, DaySessionsView, UpdateWorkSessionPatch, WorkSession } from './types/work-session'
 
 /**
@@ -65,6 +66,13 @@ export const api = {
   worklogGenerateDrafts: (localDate: string) => invoke<WorklogDayView>('worklog_generate_drafts', { localDate }),
   worklogUpdateDraft: (id: string, edit: WorklogDraftEdit) => invoke<unknown>('worklog_update_draft', { id, edit }),
   worklogDeleteDraft: (id: string) => invoke<void>('worklog_delete_draft', { id }),
+  worklogGetTemplates: () => invoke<TemplateSettings>('worklog_get_templates'),
+  worklogSaveTemplates: (value: TemplateSettings) => invoke<TemplateSettings>('worklog_save_templates', { value }),
+  worklogApplyTemplate: (draftId: string, templateId: string) =>
+    invoke<unknown>('worklog_apply_template', { draftId, templateId }),
+  worklogRecalculateDraft: (draftId: string) => invoke<unknown>('worklog_recalculate_draft', { draftId }),
+  worklogGetReminder: () => invoke<WorklogReminder | null>('worklog_get_reminder'),
+  worklogDismissReminder: (localDate: string) => invoke<void>('worklog_dismiss_reminder', { localDate }),
   jiraSubmitDrafts: (draftIds: string[]) => invoke<DraftSubmitResult[]>('jira_submit_drafts', { draftIds }),
   jiraReconcileSubmission: (submissionId: string) => invoke<SubmitOutcome>('jira_reconcile_submission', { submissionId }),
   jiraListUnknownSubmissions: () => invoke<UnknownSubmissionView[]>('jira_list_unknown_submissions'),

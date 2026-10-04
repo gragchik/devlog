@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { JiraConnectionStatus } from '@shared/types/jira'
 import type { Project } from '@shared/types/project'
+import { TEMPLATE_PLACEHOLDERS, type CommentTemplate, type TemplateSettings } from '@shared/types/worklog'
 import type { TrackerThresholds, WhitelistEntry } from '@shared/types/settings'
 import { api, errorMessage } from '@shared/api'
 
@@ -362,6 +363,97 @@ function JiraSection(): JSX.Element {
   )
 }
 
+function TemplatesSection(): JSX.Element {
+  const [value, setValue] = useState<TemplateSettings | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [saved, setSaved] = useState(false)
+
+  useEffect(() => {
+    api.worklogGetTemplates().then(setValue).catch((err: unknown) => setError(errorMessage(err)))
+  }, [])
+
+  if (!value) {
+    return (
+      <section className="card">
+        <h2>Шаблоны комментариев</h2>
+        {error && <p className="error">{error}</p>}
+      </section>
+    )
+  }
+
+  function update(index: number, patch: Partial<CommentTemplate>): void {
+    if (!value) return
+    setValue({ ...value, templates: value.templates.map((t, i) => (i === index ? { ...t, ...patch } : t)) })
+  }
+
+  function remove(index: number): void {
+    if (!value) return
+    setValue({ ...value, templates: value.templates.filter((_, i) => i !== index) })
+  }
+
+  function add(): void {
+    if (!value) return
+    setValue({ ...value, templates: [...value.templates, { id: '', name: 'Новый шаблон', text: 'Работа над задачей {issueKey}' }] })
+  }
+
+  async function save(): Promise<void> {
+    if (!value) return
+    try {
+      setValue(await api.worklogSaveTemplates(value))
+      setError(null)
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+    } catch (err) {
+      setError(errorMessage(err))
+    }
+  }
+
+  return (
+    <section className="card">
+      <h2>Шаблоны комментариев</h2>
+      <p className="muted">
+        FR-08: текст worklog собирается только из известных данных. Поля:{' '}
+        {TEMPLATE_PLACEHOLDERS.map((p, i) => (
+          <span key={p.name}>
+            {i > 0 && ', '}
+            <code>{`{${p.name}}`}</code> — {p.hint}
+          </span>
+        ))}
+        . Пустые поля убираются вместе с лишней пунктуацией. Отмеченный шаблон используется для новых черновиков.
+      </p>
+      {error && <p className="error">{error}</p>}
+      {saved && <p className="muted">Сохранено.</p>}
+      <ul className="settings-list template-list">
+        {value.templates.map((t, i) => (
+          <li key={t.id || `new-${i}`}>
+            <input
+              type="radio"
+              name="default-template"
+              title="По умолчанию"
+              checked={t.id !== '' && t.id === value.defaultTemplateId}
+              disabled={t.id === ''}
+              onChange={() => setValue({ ...value, defaultTemplateId: t.id })}
+            />
+            <input className="template-name" value={t.name} onChange={(e) => update(i, { name: e.target.value })} />
+            <textarea rows={2} value={t.text} onChange={(e) => update(i, { text: e.target.value })} />
+            <button type="button" onClick={() => remove(i)} disabled={t.id === value.defaultTemplateId}>
+              Удалить
+            </button>
+          </li>
+        ))}
+      </ul>
+      <div className="settings-add-row">
+        <button type="button" onClick={add}>
+          + Шаблон
+        </button>
+        <button type="button" onClick={() => void save()}>
+          Сохранить
+        </button>
+      </div>
+    </section>
+  )
+}
+
 export function SettingsPage(): JSX.Element {
   return (
     <div className="page">
@@ -372,6 +464,7 @@ export function SettingsPage(): JSX.Element {
       <AutostartSection />
       <ShortcutSection />
       <JiraSection />
+      <TemplatesSection />
     </div>
   )
 }

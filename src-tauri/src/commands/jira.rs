@@ -21,7 +21,7 @@ use crate::windows::main_window::MAIN_LABEL;
 use crate::worklog::drafts::{self, MIN_WORKLOG_SECONDS};
 use crate::worklog::submission::{self, DraftSubmitResult, SubmitOutcome};
 
-fn ensure_main_window(window: &WebviewWindow) -> Result<(), String> {
+pub(super) fn ensure_main_window(window: &WebviewWindow) -> Result<(), String> {
     if window.label() == MAIN_LABEL {
         Ok(())
     } else {
@@ -29,7 +29,7 @@ fn ensure_main_window(window: &WebviewWindow) -> Result<(), String> {
     }
 }
 
-fn lock(db: &AppDatabase) -> Result<std::sync::MutexGuard<'_, rusqlite::Connection>, String> {
+pub(super) fn lock(db: &AppDatabase) -> Result<std::sync::MutexGuard<'_, rusqlite::Connection>, String> {
     db.0.lock().map_err(|_| "database lock poisoned".to_string())
 }
 

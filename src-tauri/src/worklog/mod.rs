@@ -3,4 +3,6 @@
 //! `commands/jira.rs` только переводят IPC в вызовы этого слоя.
 
 pub mod drafts;
+pub mod reminder;
 pub mod submission;
+pub mod templates;

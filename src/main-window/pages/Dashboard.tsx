@@ -1,9 +1,65 @@
 import { useEffect, useState } from 'react'
-import { formatDuration } from '@shared/utils/format-duration'
+import { listen } from '@tauri-apps/api/event'
+import type { WorklogReminder } from '@shared/types/worklog'
+import { formatDuration, formatDurationShort } from '@shared/utils/format-duration'
+import type { Navigate } from '../navigation'
 import { api, errorMessage } from '@shared/api'
 import { useDaySessions } from '@shared/hooks/useDaySessions'
 
-export function Dashboard(): JSX.Element {
+function ReminderCard({ navigate }: { navigate: Navigate }): JSX.Element | null {
+  const [reminder, setReminder] = useState<WorklogReminder | null>(null)
+
+  useEffect(() => {
+    const load = (): void => {
+      api.worklogGetReminder().then(setReminder).catch(() => setReminder(null))
+    }
+    load()
+    // Назначение задач/отправка меняют картину — перечитываем по тому же
+    // событию, что и сессии (оно приходит и после правок в overlay).
+    const unlistenPromise = listen('sessions:changed', load)
+    return () => {
+      void unlistenPromise.then((unlisten) => unlisten())
+    }
+  }, [])
+
+  if (!reminder) return null
+
+  async function dismiss(): Promise<void> {
+    if (!reminder) return
+    await api.worklogDismissReminder(reminder.localDate).catch(() => {})
+    setReminder(null)
+  }
+
+  return (
+    <section className="card reminder-card">
+      <h2>Отчёт за {reminder.localDate} не закрыт</h2>
+      <p>
+        {reminder.unreportedSeconds > 0 && (
+          <>
+            {formatDurationShort(reminder.unreportedSeconds)} по {reminder.unreportedIssueCount} задач(ам) ещё не
+            отправлено в Jira.{' '}
+          </>
+        )}
+        {reminder.unassignedSeconds > 0 && <>{formatDurationShort(reminder.unassignedSeconds)} без задачи.</>}
+      </p>
+      <div className="reminder-actions">
+        {reminder.unassignedSeconds > 0 && (
+          <button type="button" onClick={() => navigate('timeline', reminder.localDate)}>
+            Назначить задачи
+          </button>
+        )}
+        <button type="button" className="primary" onClick={() => navigate('worklog', reminder.localDate)}>
+          Подготовить отчёт
+        </button>
+        <button type="button" className="link-button" onClick={() => void dismiss()}>
+          Скрыть
+        </button>
+      </div>
+    </section>
+  )
+}
+
+export function Dashboard({ navigate }: { navigate: Navigate }): JSX.Element {
   const { view, loading, error } = useDaySessions('today')
   const [paused, setPaused] = useState<boolean | null>(null)
   const [pauseError, setPauseError] = useState<string | null>(null)
@@ -33,6 +89,8 @@ export function Dashboard(): JSX.Element {
   return (
     <div className="page">
       <h1>Dashboard</h1>
+
+      <ReminderCard navigate={navigate} />
 
       <section className="card status-card">
         <div className={`status-dot ${paused ? 'status-dot-paused' : 'status-dot-live'}`} />

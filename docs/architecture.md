@@ -400,6 +400,24 @@ workarea-aware позиционирование на несколько мони
 (есть только выборка по задаче вокруг нужного времени — достаточно для
 дублей/reconciliation).
 
+## Описания и удобство (Итерация 8)
+
+- `worklog/templates.rs` — шаблоны комментариев в `settings`
+  (`worklog.templates`), рендер с полями `{issueKey}`, `{issueTitle}`,
+  `{activity}`, `{date}`, `{duration}`. `{activity}` — категории
+  приложений из `activity_events` (`Tracking`) внутри сессий черновика:
+  только где шла работа, без выводов о результате (FR-08.2).
+- `worklog/drafts.rs` — генерация использует шаблон по умолчанию;
+  `recalculate` (время из текущих сессий, комментарий не трогает) и
+  `apply_template`.
+- `worklog/reminder.rs` — последний день с работой за неделю, по которому
+  есть неотправленное или нераспределённое время; "скрыть" хранит дату
+  в `worklog.reminderDismissedFor`.
+- `commands/worklog.rs` — IPC для этого (только главное окно).
+- Frontend: `main-window/navigation.ts` — `navigate(tab, date)`; карточка
+  напоминания на Dashboard, фильтры Timeline, шаблоны/пересчёт/"выбрать
+  все"/автоформирование в Worklog, редактор шаблонов в Settings.
+
 ## Что сознательно НЕ сделано в Итерации 0
 
 - **Нет SQLite** — будет `rusqlite` (ADR готовится к Итерации 1, по

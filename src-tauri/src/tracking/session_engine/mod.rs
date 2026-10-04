@@ -61,7 +61,7 @@ fn local_midnight_boundaries_utc(range_start_utc: i64, range_end_utc: i64) -> Ve
 }
 
 /// Полный локальный календарный день `date` как `[start, end)` в UTC-секундах.
-fn local_date_range_utc(date: chrono::NaiveDate) -> Option<(i64, i64)> {
+pub fn local_date_range_utc(date: chrono::NaiveDate) -> Option<(i64, i64)> {
     let start = Local.from_local_datetime(&date.and_hms_opt(0, 0, 0)?).single()?;
     let next_date = date.succ_opt()?;
     let end = Local.from_local_datetime(&next_date.and_hms_opt(0, 0, 0)?).single()?;

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import type { WorkSession } from '@shared/types/work-session'
 import { formatDuration } from '@shared/utils/format-duration'
 import { SessionRow } from '../components/SessionRow'
 import { api, errorMessage } from '@shared/api'
@@ -11,10 +12,33 @@ function toDateInputValue(choice: DateChoice, resolvedDate: string | undefined):
   return choice
 }
 
-export function Timeline(): JSX.Element {
-  const [dateChoice, setDateChoice] = useState<DateChoice>('today')
+type StatusFilter = 'all' | 'unassigned' | 'assigned' | 'excluded'
+
+const STATUS_FILTERS: { id: StatusFilter; label: string }[] = [
+  { id: 'all', label: 'Все' },
+  { id: 'unassigned', label: 'Без задачи' },
+  { id: 'assigned', label: 'С задачей' },
+  { id: 'excluded', label: 'Исключённые' }
+]
+
+function matchesFilter(session: WorkSession, status: StatusFilter, query: string): boolean {
+  const excluded = session.reviewStatus === 'excluded' || session.deletedAt !== null
+  const statusOk =
+    status === 'all' ||
+    (status === 'excluded' && excluded) ||
+    (status === 'unassigned' && !excluded && session.issueKey === null) ||
+    (status === 'assigned' && !excluded && session.issueKey !== null)
+  const q = query.trim().toUpperCase()
+  const text = `${session.issueKey ?? ''} ${session.description ?? ''}`.toUpperCase()
+  return statusOk && (q === '' || text.includes(q))
+}
+
+export function Timeline({ initialDate }: { initialDate?: string }): JSX.Element {
+  const [dateChoice, setDateChoice] = useState<DateChoice>(initialDate ?? 'today')
   const { view, loading, error, reload } = useDaySessions(dateChoice)
   const [manualError, setManualError] = useState<string | null>(null)
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
+  const [query, setQuery] = useState('')
 
   async function createManualSession(): Promise<void> {
     const description = window.prompt('Описание (например, «Созвон по архитектуре»):')
@@ -36,7 +60,8 @@ export function Timeline(): JSX.Element {
     }
   }
 
-  const visibleSessions = view?.sessions ?? []
+  const allSessions = view?.sessions ?? []
+  const visibleSessions = allSessions.filter((s) => matchesFilter(s, statusFilter, query))
 
   return (
     <div className="page">
@@ -58,6 +83,14 @@ export function Timeline(): JSX.Element {
           + Ручная сессия
         </button>
       </div>
+      <div className="timeline-toolbar timeline-filters">
+        {STATUS_FILTERS.map((f) => (
+          <button key={f.id} type="button" className={statusFilter === f.id ? 'active' : ''} onClick={() => setStatusFilter(f.id)}>
+            {f.label}
+          </button>
+        ))}
+        <input placeholder="Задача или описание" value={query} onChange={(e) => setQuery(e.target.value)} />
+      </div>
       {manualError && <p className="error">{manualError}</p>}
 
       {loading && <p>Загрузка…</p>}
@@ -70,9 +103,18 @@ export function Timeline(): JSX.Element {
             {formatDuration(view.unassignedSeconds)}
           </p>
           <div className="session-list">
-            {visibleSessions.length === 0 && <p className="muted">Нет сессий за этот день.</p>}
-            {visibleSessions.map((session, i) => (
-              <SessionRow key={session.id} session={session} nextSession={visibleSessions[i + 1] ?? null} onChanged={reload} />
+            {visibleSessions.length === 0 && (
+              <p className="muted">{allSessions.length === 0 ? 'Нет сессий за этот день.' : 'Нет сессий под фильтр.'}</p>
+            )}
+            {visibleSessions.map((session) => (
+              <SessionRow
+                key={session.id}
+                session={session}
+                // Соседняя сессия — по полному списку, а не отфильтрованному:
+                // «объединить» должно работать только с реальным соседом.
+                nextSession={allSessions[allSessions.indexOf(session) + 1] ?? null}
+                onChanged={reload}
+              />
             ))}
           </div>
         </>

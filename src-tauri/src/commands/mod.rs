@@ -6,3 +6,4 @@ pub mod shortcuts;
 pub mod settings;
 pub mod tracking;
 pub mod windows;
+pub mod worklog;
