@@ -14,7 +14,7 @@ import type { CreateProjectInput, Project, UpdateProjectInput } from './types/pr
 import type { TrackerThresholds, WhitelistEntry } from './types/settings'
 import type { TemplateSettings, WorklogReminder } from './types/worklog'
 import type { DeleteRequest, DeleteSummary, DiagnosticsView, ExportKind } from './types/data'
-import type { CreateWorkSessionInput, DaySessionsView, UpdateWorkSessionPatch, WorkSession } from './types/work-session'
+import type { CreateWorkSessionInput, DaySessionsView, DaySummary, UpdateWorkSessionPatch, WorkSession } from './types/work-session'
 
 /**
  * Тонкая типизированная обёртка над `invoke()` — один файл со всеми
@@ -25,6 +25,7 @@ import type { CreateWorkSessionInput, DaySessionsView, UpdateWorkSessionPatch, W
  */
 export const api = {
   getSessionsForDay: (localDate: string) => invoke<DaySessionsView>('get_sessions_for_day', { localDate }),
+  listDaySummaries: (days: number) => invoke<DaySummary[]>('list_day_summaries', { days }),
   updateSession: (id: string, patch: UpdateWorkSessionPatch) => invoke<WorkSession>('update_session', { id, patch }),
   splitSession: (id: string, atUtc: number) => invoke<[WorkSession, WorkSession]>('split_session', { id, atUtc }),
   mergeSessions: (firstId: string, secondId: string) => invoke<WorkSession>('merge_sessions', { firstId, secondId }),
@@ -47,6 +48,8 @@ export const api = {
 
   getTrackingPaused: () => invoke<boolean>('get_tracking_paused'),
   setTrackingPaused: (paused: boolean) => invoke<boolean>('set_tracking_paused', { paused }),
+  getSessionActive: () => invoke<boolean>('get_session_active'),
+  setSessionActive: (active: boolean) => invoke<boolean>('set_session_active', { active }),
 
   getPinnedIssue: () => invoke<string | null>('get_pinned_issue'),
   setPinnedIssue: (issueKey: string | null) => invoke<void>('set_pinned_issue', { issueKey }),

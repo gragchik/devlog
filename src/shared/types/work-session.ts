@@ -30,6 +30,16 @@ export interface DaySessionsView {
   excludedSeconds: number
 }
 
+/** Зеркалит `DaySummary` в `src-tauri/src/commands/sessions.rs` — сводка
+ * по дню без самого списка сессий, для аккордеона в Timeline. */
+export interface DaySummary {
+  localDate: string
+  totalActiveSeconds: number
+  unassignedSeconds: number
+  excludedSeconds: number
+  sessionCount: number
+}
+
 /** Патч для `update_session` — double-option семантика на Rust-стороне:
  * поле отсутствует в объекте → не трогать; поле равно `null` → очистить;
  * поле со значением → установить. В TS это просто означает "не добавляйте

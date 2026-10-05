@@ -23,20 +23,20 @@ pub struct DaySessionsView {
     pub excluded_seconds: i64,
 }
 
-fn build_day_view(local_date: String, sessions: Vec<WorkSession>) -> DaySessionsView {
+/// (total_active, unassigned, excluded, session_count) — общий расчёт для
+/// `DaySessionsView` (полный день) и `DaySummary` (сводка в аккордеоне
+/// Timeline). Мягко удалённые (FR-05.4) не считаются ни во что, но из
+/// `sessions`-списка их не убирают — см. комментарий у `DaySessionsView`.
+fn compute_day_totals(sessions: &[WorkSession]) -> (i64, i64, i64, i64) {
     let mut total = 0i64;
     let mut unassigned = 0i64;
     let mut excluded = 0i64;
-    // Мягко удалённые (FR-05.4 "исключить" через soft_delete) не считаются
-    // ни во что — но при этом остаются в `sessions` ниже, чтобы UI мог их
-    // показать (приглушённо) и предложить "Восстановить" (FR-05.4). Если бы
-    // мы отдавали только неудалённые, кнопка "Восстановить" была бы
-    // недостижима — ровно такой баг был найден и исправлен при ручной
-    // проверке Итерации 5 (см. docs/iterations/05.md).
-    for s in &sessions {
+    let mut count = 0i64;
+    for s in sessions {
         if s.deleted_at.is_some() {
             continue;
         }
+        count += 1;
         match s.review_status {
             WorkSessionReviewStatus::Excluded => excluded += s.active_seconds,
             WorkSessionReviewStatus::Unassigned => {
@@ -46,7 +46,29 @@ fn build_day_view(local_date: String, sessions: Vec<WorkSession>) -> DaySessions
             _ => total += s.active_seconds,
         }
     }
+    (total, unassigned, excluded, count)
+}
+
+fn build_day_view(local_date: String, sessions: Vec<WorkSession>) -> DaySessionsView {
+    // Мягко удалённые (FR-05.4 "исключить" через soft_delete) остаются в
+    // `sessions` ниже, чтобы UI мог их показать (приглушённо) и предложить
+    // "Восстановить" (FR-05.4) — именно поэтому они не отфильтрованы перед
+    // этим вызовом, а пропускаются только внутри `compute_day_totals`. Если
+    // бы мы отдавали только неудалённые, кнопка "Восстановить" была бы
+    // недостижима — ровно такой баг был найден и исправлен при ручной
+    // проверке Итерации 5 (см. docs/iterations/05.md).
+    let (total, unassigned, excluded, _count) = compute_day_totals(&sessions);
     DaySessionsView { local_date, sessions, total_active_seconds: total, unassigned_seconds: unassigned, excluded_seconds: excluded }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DaySummary {
+    pub local_date: String,
+    pub total_active_seconds: i64,
+    pub unassigned_seconds: i64,
+    pub excluded_seconds: i64,
+    pub session_count: i64,
 }
 
 /// Все команды-мутаторы в этом файле эмитят `sessions:changed` при успехе —
@@ -64,6 +86,37 @@ pub fn get_sessions_for_day(db: State<AppDatabase>, local_date: String) -> Resul
     let conn = db.lock();
     let sessions = work_sessions::list_by_range(&conn, start, end, true).map_err(|e| e.to_string())?;
     Ok(build_day_view(resolved_date, sessions))
+}
+
+/// Сводки по последним `days` календарным дням (от сегодня назад) — для
+/// списка-аккордеона в Timeline: сам список сессий конкретного дня
+/// (который может быть длинным — сессии по 1-5 минут друг от друга)
+/// подгружается лениво через `get_sessions_for_day`, только когда
+/// пользователь разворачивает день, а не все дни сразу. Дни без единой
+/// сессии не включаются в результат — незачем занимать строчку в списке
+/// пустым днём (выходные и т.п.).
+#[tauri::command]
+pub fn list_day_summaries(db: State<AppDatabase>, days: u32) -> Result<Vec<DaySummary>, String> {
+    let conn = db.lock();
+    let today = chrono::Local::now().date_naive();
+    let mut result = Vec::new();
+    for offset in 0..days {
+        let Some(date) = today.checked_sub_signed(chrono::Duration::days(i64::from(offset))) else { break };
+        let Some((start, end)) = session_engine::local_date_range_utc(date) else { continue };
+        let sessions = work_sessions::list_by_range(&conn, start, end, true).map_err(|e| e.to_string())?;
+        let (total, unassigned, excluded, count) = compute_day_totals(&sessions);
+        if count == 0 {
+            continue;
+        }
+        result.push(DaySummary {
+            local_date: date.format("%Y-%m-%d").to_string(),
+            total_active_seconds: total,
+            unassigned_seconds: unassigned,
+            excluded_seconds: excluded,
+            session_count: count,
+        });
+    }
+    Ok(result)
 }
 
 #[tauri::command]

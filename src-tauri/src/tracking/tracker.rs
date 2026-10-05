@@ -57,6 +57,15 @@ fn read_u64_setting(conn: &Connection, key: &str, default: u64) -> u64 {
 /// жизненного цикла окон").
 pub struct ActivityTrackerHandle {
     paused: Arc<AtomicBool>,
+    /// Отдельный от `paused` переключатель (UI: "Активная сессия"
+    /// вкл/выкл). `paused` — короткая осознанная пауза внутри активной
+    /// сессии (пишется как `PAUSED`-событие, видно в отчётах). Выключенная
+    /// сессия — сильнее: опрос вообще не пишет события, как если бы
+    /// трекер не запускался (см. `poll_once` под замком `session_active`
+    /// в цикле `start()`). По умолчанию `true` — трекинг начинается сам,
+    /// как только пользователь запустил приложение (не требует ручного
+    /// включения).
+    session_active: Arc<AtomicBool>,
 }
 
 impl ActivityTrackerHandle {
@@ -74,6 +83,14 @@ impl ActivityTrackerHandle {
         let new_value = !self.is_paused();
         self.set_paused(new_value);
         new_value
+    }
+
+    pub fn is_session_active(&self) -> bool {
+        self.session_active.load(Ordering::SeqCst)
+    }
+
+    pub fn set_session_active(&self, value: bool) {
+        self.session_active.store(value, Ordering::SeqCst);
     }
 }
 
@@ -139,7 +156,8 @@ fn resolve_git_context(conn: &Connection) -> GitContextResult {
 /// WAL, а не graceful shutdown этого потока).
 pub fn start(app: &AppHandle) -> ActivityTrackerHandle {
     let paused = Arc::new(AtomicBool::new(false));
-    let handle = ActivityTrackerHandle { paused: Arc::clone(&paused) };
+    let session_active = Arc::new(AtomicBool::new(true));
+    let handle = ActivityTrackerHandle { paused: Arc::clone(&paused), session_active: Arc::clone(&session_active) };
 
     let app_handle = app.clone();
     thread::spawn(move || {
@@ -176,7 +194,15 @@ pub fn start(app: &AppHandle) -> ActivityTrackerHandle {
             // молча останавливать учёт времени до перезапуска: пишем в лог
             // (panic hook) и продолжаем со следующего опроса.
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                poll_once(&app_handle, &paused, &whitelist, now, seconds_since_last_poll, poll_interval_seconds, idle_threshold_seconds);
+                // Выключенная сессия ("Активная сессия" = выкл в UI) —
+                // опрос вообще не пишет событие за этот tick, в отличие
+                // от ручной паузы, которая всё равно пишет PAUSED (видимо
+                // в отчётах как исключённое время). Пересборка сессий дня
+                // ниже всё равно выполняется — она safe-idempotent и не
+                // должна зависеть от того, идёт ли опрос прямо сейчас.
+                if session_active.load(Ordering::SeqCst) {
+                    poll_once(&app_handle, &paused, &whitelist, now, seconds_since_last_poll, poll_interval_seconds, idle_threshold_seconds);
+                }
                 let today = chrono::Local::now().date_naive();
                 if previous_day_rebuilt_for != Some(today) {
                     rebuild_previous_day(&app_handle, today, poll_interval_seconds);

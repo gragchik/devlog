@@ -17,6 +17,18 @@ pub fn set_tracking_paused(app: AppHandle, tracker: State<ActivityTrackerHandle>
 }
 
 #[tauri::command]
+pub fn get_session_active(tracker: State<ActivityTrackerHandle>) -> bool {
+    tracker.is_session_active()
+}
+
+#[tauri::command]
+pub fn set_session_active(app: AppHandle, tracker: State<ActivityTrackerHandle>, active: bool) -> bool {
+    tracker.set_session_active(active);
+    let _ = app.emit("tracking:changed", ());
+    tracker.is_session_active()
+}
+
+#[tauri::command]
 pub fn get_pinned_issue(db: State<AppDatabase>) -> Result<Option<String>, String> {
     let conn = db.lock();
     Ok(pinned_task::get_pinned_issue_key(&conn))

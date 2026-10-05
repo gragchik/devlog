@@ -39,6 +39,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::app_info::get_app_info,
             commands::sessions::get_sessions_for_day,
+            commands::sessions::list_day_summaries,
             commands::sessions::update_session,
             commands::sessions::split_session,
             commands::sessions::merge_sessions,
@@ -58,6 +59,8 @@ pub fn run() {
             commands::settings::set_autostart_enabled,
             commands::tracking::get_tracking_paused,
             commands::tracking::set_tracking_paused,
+            commands::tracking::get_session_active,
+            commands::tracking::set_session_active,
             commands::tracking::get_pinned_issue,
             commands::tracking::set_pinned_issue,
             commands::shortcuts::get_overlay_shortcut,
